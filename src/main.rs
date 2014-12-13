@@ -27,12 +27,21 @@ impl fmt::Show for SchemeAlertType {
 
 enum SchemeAlert<'a> {
 	Unexp(&'a str),
+	WrongType(&'a str, &'a str),
+	ArityMiss(&'a str, uint, &'a str, uint),
+	Bad(&'a str),
 	Undef(&'a str),
 }
 
 fn scheme_alert(alert: SA, a_type: SchemeAlertType) {
 	match alert {
 		SA::Unexp(s) => println!("; {}: Unexpected `{}`", a_type, s),
+		SA::WrongType(exp, got) => println!("; {}: Wrong type. Expected `{}`, found `{}`",
+				a_type, exp, got),
+		SA::Undef(s) => println!("; {}: Undefined variable `{}`", a_type, s),
+		SA::Bad(s) => println!("; {}: Bad `{}`", a_type, s),
+		SA::ArityMiss(s, got, vs, exp) => println!("; {}: Arity missmatch in `{}`, {} {} {}",
+				a_type, s, got, vs, exp),
 	}
 	if let SAT::Error = a_type {
 		panic!()
@@ -40,7 +49,7 @@ fn scheme_alert(alert: SA, a_type: SchemeAlertType) {
 }
 
 /// An element in an S-Expression list
-#[deriving(Clone)]
+#[deriving(Clone, PartialEq)]
 #[allow(dead_code)]
 enum SEle {
 	SExpr(Vec<SEle>),
@@ -50,6 +59,20 @@ enum SEle {
 	SSymbol(String),
 	SBool(bool),
 	SPair(Option<Vec<SEle>>)
+}
+
+impl SEle {
+	fn variant(&self) -> &'static str {
+		match self {
+			&SExpr(_) => "Expression",
+			&SBinding(_) => "Binding",
+			&SNum(_) => "Number",
+			&SStr(_) => "String",
+			&SSymbol(_) => "Symbol",
+			&SBool(_) => "Bool",
+			&SPair(_) => "List"
+		}
+	}
 }
 
 impl fmt::Show for SEle {
@@ -268,7 +291,7 @@ fn parse_source_text(src: String) -> List {
 	parse_expressions(splitted.as_slice())
 }
 
-fn into_begin(s: String) -> String {
+fn str_wrap_begin(s: String) -> String {
 	format!("(begin {})", s)
 }
 
@@ -280,6 +303,28 @@ fn scm_add_iter(env: &mut Env, sum: f64, mut operands: List) -> f64 {
 		}
 	} else {
 		sum
+	}
+}
+
+fn scm_sub_iter(env: &mut Env, diff: f64, mut operands: List) -> f64 {
+	if let Some(expr) = operands.pop() {
+		match env.elem_value(expr) {
+			SNum(x) => scm_sub_iter(env, diff - x, operands),
+			x => panic!("`{}` is NaN", x)
+		}
+	} else {
+		diff
+	}
+}
+
+fn scm_div_iter(env: &mut Env, numerator: f64, mut denoms: List) -> f64 {
+	if let Some(expr) = denoms.pop() {
+		match env.elem_value(expr) {
+			SNum(x) => scm_div_iter(env, numerator / x, denoms),
+			x => panic!("`{}` is NaN", x)
+		}
+	} else {
+		numerator
 	}
 }
 
@@ -314,16 +359,22 @@ struct Env<'a> {
 	// Name, Argument names, Closure
 	fn_defs: Vec<FnDef<'a>>,
 	// Name, Value
-	var_defs: Vec<(String, SEle)>
-}
-
-fn call_fn(env: *mut Env, f_name: &str, args: List) -> SEle {
-	let env_brw: &mut Env = unsafe{transmute(&mut *env)};
-	let fndef = env_brw.get_fn(f_name);
-	(fndef.closure)(unsafe{transmute(&mut *env)}, fndef.arg_names.clone(), args, fndef.body.clone())
+	var_defs: Vec<(String, SEle)>,
+	// When the `error_mode` is set to `Warn`, all errors are reported as warnings.
+	// Useful when run in shell mode and stuff like undefined vars should not crash the session.
+	error_mode: SAT
 }
 
 impl<'a> Env<'a> {
+	fn new_strict(fn_defs: Vec<FnDef<'a>>, var_defs: Vec<(String, SEle)>) -> Env<'a> {
+		Env {fn_defs: fn_defs, var_defs: var_defs, error_mode: SAT::Error }
+	}
+
+	#[allow(dead_code)]
+	fn new_lenient(fn_defs: Vec<FnDef<'a>>, var_defs: Vec<(String, SEle)>) -> Env<'a> {
+		Env {fn_defs: fn_defs, var_defs: var_defs, error_mode: SAT::Warn }
+	}
+
 	fn define_var(&mut self, binding: String, val: SEle) {
 		let val = self.elem_value(val);
 		self.var_defs.push((binding, val));
@@ -338,7 +389,8 @@ impl<'a> Env<'a> {
 				continue;
 			}
 		}
-		scheme_alert("Variable `{}` is not defined", to_get)
+		scheme_alert(SA::Undef(to_get), self.error_mode);
+		unity()
 	}
 
 	fn pop_var_def(&mut self) -> (String, SEle) {
@@ -403,20 +455,25 @@ impl<'a> Env<'a> {
 
 	fn define_fn(&mut self, head: SEle, body: SEle) {
 		let (fn_binding, arg_names) = self.dismantle_f_head(head);
+
 		let defined_f: ScmFn<'a> = |env, arg_names_opt, ops, body| {
+			let evaled_args = env.eval_args(ops);
 			let arg_names = arg_names_opt.unwrap();
 			let n_args = arg_names.len();
-			if n_args != ops.len() {
-				panic!("Wrong number of arguments supplied");
+			if n_args != evaled_args.len() {
+				scheme_alert(SA::ArityMiss("_", n_args,"!=",evaled_args.len()),
+					env.error_mode);
+				return unity();
 			}
 			// Bind and push supplied args to environment
-			for (k, v) in arg_names.clone().into_iter().zip(ops.into_iter()) {
+			for (k, v) in arg_names.clone().into_iter().zip(evaled_args.into_iter()) {
 				env.define_var(k, v);
 			}
 			let result = env.elem_value(body.unwrap());
 			env.pop_var_defs(n_args);
 			result
 		};
+
 		self.fn_defs.push(FnDef::new_full(fn_binding, arg_names, defined_f, body))
 	}
 
@@ -425,7 +482,7 @@ impl<'a> Env<'a> {
 	fn eval_expr(&mut self, mut expr: List) -> SEle {
 		match expr.remove(0).unwrap() {
 			SBinding(s) => {
-				let ele = call_fn(self, s.as_slice(), expr);
+				let ele = call_proc(self, s.as_slice(), expr);
 				if let SExpr(inner_expr) = ele {
 					self.eval_expr(inner_expr)
 				} else {
@@ -454,7 +511,7 @@ impl<'a> Env<'a> {
 		for expr in range(0, it.len()-1).map(|_| it.next()) {
 			self.elem_value(expr.unwrap());
 		}
-		self.elem_value(it.next().expect("Failed to retrieve last expression"))
+		self.elem_value(it.next().unwrap())
 	}
 
 	// This is run when there are multiple statements in a single expression body, like in a
@@ -471,28 +528,28 @@ impl<'a> Env<'a> {
 
 		result
 	}
-}
 
-fn scm_sub_iter(env: &mut Env, diff: f64, mut operands: List) -> f64 {
-	if let Some(expr) = operands.pop() {
-		match env.elem_value(expr) {
-			SNum(x) => scm_sub_iter(env, diff - x, operands),
-			x => panic!("`{}` is NaN", x)
+	fn eval_args(&mut self, exprs: List) -> List {
+		exprs.into_iter().map(|e| self.elem_value(e)).collect()
+	}
+
+	fn elem_is_true(&mut self, ele: SEle) -> bool {
+		match ele {
+			SBool(b) => b,
+			SExpr(_) => {
+				let val = self.elem_value(ele);
+				self.elem_is_true(val)
+			},
+			_ => false
 		}
-	} else {
-		diff
 	}
 }
 
-fn scm_div_iter(env: &mut Env, numerator: f64, mut denoms: List) -> f64 {
-	if let Some(expr) = denoms.pop() {
-		match env.elem_value(expr) {
-			SNum(x) => scm_div_iter(env, numerator / x, denoms),
-			x => panic!("`{}` is NaN", x)
-		}
-	} else {
-		numerator
-	}
+fn call_proc(env: *mut Env, f_name: &str, args: List) -> SEle {
+	let env_brw: &mut Env = unsafe{transmute(&mut *env)};
+	let fndef = env_brw.get_fn(f_name);
+	(fndef.closure)(unsafe{transmute(&mut *env)}, fndef.arg_names.clone(), args,
+		fndef.body.clone())
 }
 
 fn to_strings(slc: &[&str]) -> Vec<String> {
@@ -536,6 +593,11 @@ fn interactive_shell(env: &mut Env) {
 	}
 }
 
+fn elems_wrap_begin(mut elems: List) -> SEle {
+	elems.insert(0, SBinding("begin".to_string()));
+	SExpr(elems)
+}
+
 fn main(){
 	// Scheme Standard library
 	let std_procs: Vec<(&str, ScmFn)> = vec![
@@ -568,18 +630,50 @@ fn main(){
 				panic!("Wrong number of arguments")
 			}
 		)),
-		("define", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>| {
+		("remainder", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
 			if ops.len() != 2 {
-				panic!("Wrong number of arguments")
+				scheme_alert(SA::ArityMiss("remainder", ops.len(),"!=",2),
+					env.error_mode);
+				unity()
+			} else {
+				let e2 = env.elem_value(ops.pop().unwrap());
+				let e1 = env.elem_value(ops.pop().unwrap());
+				match (e1, e2) {
+					(SNum(n1), SNum(n2)) => SNum(n1 % n2),
+					(t1, t2) => {
+						scheme_alert(SA::WrongType("Number, Number",
+								format!("{}, {}", t1.variant(),
+									t2.variant()).as_slice()),
+							env.error_mode);
+						unity()
+					}
+				}
 			}
-			match ops.remove(0).expect("Could not retrieve binding") {
-				SBinding(b) => env.define_var(b, ops.pop().unwrap()),
-				SExpr(expr) => env.define_fn(SExpr(expr), ops.pop().unwrap()),
-				x => panic!("Invalid binding `{}`", x),
-			}
-			unity()
-				
-		}),
+		),
+		// ("lambda", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
+		// ),
+		("define", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
+			if ops.len() < 2 {
+				scheme_alert(SA::ArityMiss("define", ops.len(),"<",2),
+					env.error_mode);
+				unity()
+			} else {
+				match ops.remove(0).unwrap() {
+					SBinding(b) =>
+						if ops.len() != 1 {
+							scheme_alert(SA::ArityMiss("define",
+								ops.len(),"<",2), env.error_mode);
+						} else {
+							env.define_var(b, ops.pop().unwrap());
+						},
+					SExpr(expr) => env.define_fn(SExpr(expr), elems_wrap_begin(
+								ops)),
+					_ => scheme_alert(SA::Bad("define body"), env.error_mode),
+				}
+				unity()
+			}		
+		),
+
 		("display", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>| {
 			if ops.len() != 1 {
 				panic!("Arity missmatch")
@@ -590,6 +684,105 @@ fn main(){
 		}),
 		("begin", |env: &mut Env, _: Option<Vec<String>>, ops, _: Option<SEle>| {
 			env.eval_block(ops)
+		}),
+		("eqv?", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
+			if ops.len() == 0 || ops.len() == 1 {
+				SBool(true)
+			} else {
+				let e1 = ops.pop().unwrap();
+				let v1 = env.elem_value(e1);
+				for e2 in ops.into_iter() {
+					if v1 != env.elem_value(e2) {
+						return SBool(false);
+					}
+				}
+				SBool(true)
+			}
+		),
+		("number?", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
+			if ops.len() != 1 {
+				scheme_alert(SA::ArityMiss("numbers?", ops.len(),"!=",1),
+					env.error_mode);
+				unity()
+			} else {
+				if let SNum(_) = env.elem_value(ops.pop().unwrap()) {
+					SBool(true)
+				} else {
+					SBool(false)
+				}
+			}
+		),
+		("=", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
+			// TODO: use create macro to artificially construct scheme expression
+			if ops.clone().into_iter().all(|e| env.elem_is_true(SExpr(vec![
+						SBinding("number?".to_string()), e])))
+			{
+				ops.insert(0, SBinding("eqv?".to_string()));
+				SBool(env.elem_is_true(SExpr(ops)))
+			} else {
+				scheme_alert(SA::WrongType("Number", "_"), env.error_mode);
+				unity()
+			}
+		),
+		("cond", |env: &mut Env, _: Option<Vec<String>>, ops, _: Option<SEle>| {
+			if ops.len() < 2 {
+				scheme_alert(SA::ArityMiss("cond", ops.len(),"<",2), env.error_mode);
+				return unity();
+			}
+			for clause in ops.into_iter() {
+				if let SExpr(mut clause_v) = clause {
+					if clause_v.len() != 2 {
+						scheme_alert(SA::Bad("cond clause"), env.error_mode);
+						return unity();
+					}
+					let test = clause_v.remove(0).unwrap();
+					if let SBinding(maybe_else) = test {
+						if maybe_else.as_slice() == "else" {
+							return clause_v.pop().unwrap();
+						}
+					} else {
+						let test_val = env.elem_value(test);
+						if match test_val { SBool(b) => b, _ => true } {
+							return env.elem_value(clause_v.pop()
+									.unwrap());
+						}
+					}
+				} else {
+					scheme_alert(SA::Bad("cond clause"), env.error_mode);
+					return unity();
+				}
+			}
+			unity()			
+		}),
+		("if", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
+			if ops.len() != 3  {
+				scheme_alert(SA::ArityMiss("if", ops.len(),"!=",3), env.error_mode);
+				unity()
+			} else {
+				let alternative = ops.pop().unwrap();
+				let consequense = ops.pop().unwrap();
+				let condition = ops.pop().unwrap();
+				let scm_else = SBinding("else".to_string());
+				let cond = SExpr(vec![
+					SBinding("cond".to_string()),
+					SExpr(vec![condition, consequense]),
+					SExpr(vec![scm_else, alternative])
+				]);
+				env.elem_value(cond)
+			}		
+		),
+
+		("var-stack", |env: &mut Env, _: Option<Vec<String>>, _, _: Option<SEle>| {
+			println!("var stack: {}", env.var_defs);
+			unity()
+		}),
+		("proc-stack", |env: &mut Env, _: Option<Vec<String>>, _, _: Option<SEle>| {
+			println!("proc stack: {}", env.fn_defs);
+			unity()
+		}),
+		("newline", |_: &mut Env, _: Option<Vec<String>>, _, _: Option<SEle>| {
+			println!("");
+			unity()
 		}),
 	];
 	let std_vars = vec![
@@ -603,15 +796,11 @@ fn main(){
 	for (k, v) in std_vars.into_iter() {
 		vars.push((k.to_string(), v));
 	}
-	let mut env = Env{
-		fn_defs: procs,
-		var_defs: vars,
-	};
+	let mut env = Env::new_strict(procs, vars);
 
 	let maybe_input = cmdline::get_input();
 	if let Some(input) = maybe_input {
-		let mut parsed = parse_source_text(into_begin(input));
-		println!("{}\n", parsed);
+		let mut parsed = parse_source_text(str_wrap_begin(input));
 		if parsed.len() != 1 {
 			panic!("Parsed source is invalid")
 		}
