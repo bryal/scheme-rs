@@ -5,6 +5,7 @@ use std::mem::transmute;
 use std::f64::consts::PI;
 use std::fmt;
 use std::io;
+use std::mem;
 use SEle::*;
 use SchemeAlertType as SAT;
 use SchemeAlert as SA;
@@ -48,17 +49,114 @@ fn scheme_alert(alert: SA, a_type: SchemeAlertType) {
 	}
 }
 
+enum List {
+	Cons(SEle, Box<List>),
+	Nil
+}
+
+impl fmt::Show for List {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match *self {
+			List::Cons(ref ele, ref link) => write!(f, "{} {}", ele, link),
+			List::Nil => write!(f, "")
+		}
+	}
+}
+
+impl List {
+	fn swap_val(&mut self, val: &mut Box<List>) -> Result<(), ()> {
+		if let &List::Cons(ref mut self_val, _) = self {
+			mem::swap(val, self_val);
+			Ok(()))
+		} else {
+			Err(())
+		}
+	}
+
+	fn swap_link(&mut self, link: &mut Box<List>) -> Result<(), ()> {
+		if let &List::Cons(_, ref mut self_link) = self {
+			mem::swap(link, self_link);
+			Ok(()))
+		} else {
+			Err(())
+		}
+	}
+
+	fn car(&mut self) -> Option<&SEle> {
+		if let &List::Cons(ref val, _) = self {
+			Some(val)
+		} else {
+			None
+		}
+	}
+
+	fn cdr(&mut self) -> Option<&List> {
+		if let &List::Cons(_, ref list) = self {
+			Some(list)
+		} else {
+			None
+		}
+	}
+
+	fn car_pop(&mut self) -> Option<SEle> {
+		if let mut Some(cdr) = self.cdr_pop() {
+			mem::swap(&mut *cdr, self);
+			if let &List::Cons(val, _) = *cdr {
+				Some(val)
+			} else {
+				None
+			}
+		} else {
+			None
+		}
+	}
+
+	fn cdr_pop(&mut self) -> Option<List> {
+		let mut cdr = box List::Nil;
+		if let &List::Cons(_, ref mut self_link) = self {
+			if let Err(_) = self.swap_link(&mut cdr, self_cdr) {
+				return None;
+			}
+			Some(cdr)
+		} else {
+			None
+		}
+	}
+
+	fn push(&mut self, ele: SEle) {
+		if let List::Cons(_, ref mut self_link) = self {
+			match self_link {
+				&mut box List::Nil => {
+					let to_swap = List::from_ele(ele);
+					self.swap_link(to_swap).unwrap();
+				},
+				ref mut &mut box x => x.push(ele)
+			}
+		} else {
+			let mut new_self = List::Cons(ele, box List::Nil);
+			mem::swap(self, &mut new_self);
+		}
+	}
+
+	fn prepush(&mut self, ele: SEle) {
+		let mut local_self = List::Nil;
+		mem::swap(self, &mut local_self);
+		let mut new_self = List::Cons(ele, box local_self);
+		mem::swap(self, &mut new_self);
+	}
+}
+
 /// An element in an S-Expression list
 #[deriving(Clone, PartialEq)]
 #[allow(dead_code)]
 enum SEle {
-	SExpr(Vec<SEle>),
+	SExpr(List),
 	SBinding(String),
 	SNum(f64),
 	SStr(String),
 	SSymbol(String),
 	SBool(bool),
-	SPair(Option<Vec<SEle>>)
+	SList(List)
 }
 
 impl SEle {
@@ -70,7 +168,7 @@ impl SEle {
 			&SStr(_) => "String",
 			&SSymbol(_) => "Symbol",
 			&SBool(_) => "Bool",
-			&SPair(_) => "List"
+			&SList(_) => "List"
 		}
 	}
 }
@@ -78,46 +176,26 @@ impl SEle {
 impl fmt::Show for SEle {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
-			SExpr(ref x) => {
-				let l = x.len();
-				(write!(f, "(")).ok();
-				for i in range(0, l-1) {
-					(write!(f, "{} ", x[i])).ok();
-				}
-				write!(f, "{})", x[l-1])
-			},
+			SExpr(ref xs) | SList(ref xs) => write!(f, "({})", xs),
 			SBinding(ref b) => write!(f, "{}", b),
 			SNum(n) => write!(f, "{}", n),
 			SStr(ref s) => write!(f, "{}", s),
 			SSymbol(ref s) => write!(f, "'{}", s),
 			SBool(b) => write!(f, "{}", if b {"#t"} else {"#f"}),
-			SPair(ref p) =>
-				if let &Some(ref v) = p {
-					let l = v.len();
-					(write!(f, "(")).ok();
-					for i in range(0, l-1) {
-						(write!(f, "{} ", v[i])).ok();
-					}
-					write!(f, "{})", v[l-1])
-				} else {
-					write!(f, "()")
-				},
 		}
 	}
 }
 
-fn unity() -> SEle {
-	SPair(None)
+fn unit() -> SEle {
+	SList(List::Nil)
 }
 
-type List = Vec<SEle>;
-
-fn split_source_text(s: &str) -> Vec<&str> {
-	let mut ss = Vec::with_capacity(s.len() / 4);
+fn split_source_text(src: &str) -> Vec<&str> {
+	let mut ss = Vec::with_capacity(src.len() / 4);
 	let mut start_pos = 0;
 	let (mut in_string, mut in_escape, mut in_comment) = (false,false,false);
 	let mut in_space = true;
-	let mut char_iter = s.char_indices();
+	let mut char_iter = src.char_indices();
 	loop {
 		// Manual iteration in case we have to skip an iteration sometime
 		let (i, c) = match char_iter.next() {
@@ -140,7 +218,7 @@ fn split_source_text(s: &str) -> Vec<&str> {
 			' ' => {
 				if !in_string {
 					if !in_space && start_pos != i{
-						ss.push(s.slice(start_pos, i));
+						ss.push(src.slice(start_pos, i));
 					}
 					start_pos = i+1;
 				}
@@ -149,7 +227,7 @@ fn split_source_text(s: &str) -> Vec<&str> {
 			'\r' | '\n' => {
 				if !in_string {
 					if !in_space && start_pos != i{
-						ss.push(s.slice(start_pos, i));
+						ss.push(src.slice(start_pos, i));
 					}
 					// Handle \r\n line endings in case of windows
 					if c == '\r' {
@@ -163,7 +241,7 @@ fn split_source_text(s: &str) -> Vec<&str> {
 			},
 			'"' if !in_escape => {
 				if in_string {
-					ss.push(s.slice(start_pos, i+1));
+					ss.push(src.slice(start_pos, i+1));
 					start_pos = i+1;
 				} else {
 					start_pos = i;
@@ -173,9 +251,9 @@ fn split_source_text(s: &str) -> Vec<&str> {
 			'\\' => if !in_escape { in_escape = true; },
 			'(' | ')' if !in_string && !in_escape => {
 				if !in_space && start_pos != i {
-					ss.push(s.slice(start_pos, i));
+					ss.push(src.slice(start_pos, i));
 				}
-				ss.push(s.slice(i, i+1));
+				ss.push(src.slice(i, i+1));
 				start_pos = i+1;
 			},
 			_ => (),
@@ -244,32 +322,41 @@ fn parse_symbol(s: &str) -> Option<&str> {
 }
 
 fn parse_bool(s: &str) -> Option<bool> {
-	if s.starts_with("#") {
-		if s.char_at(1) == 't' {
-			Some(true)
-		} else if s.char_at(1) == 'f' {
-			Some(false)
-		} else {
-			None
-		}
+	if s == "#t" {
+		Some(true)
+	} s == "#f" {
+		Some(false)
 	} else {
 		None
 	}
 }
 
 fn parse_expressions(unparsed: &[&str]) -> List {
-	let mut parsed = Vec::with_capacity(unparsed.len());
+	let mut parsed = List::new();
 	let mut i = 0;
 	while i < unparsed.len() {
 		let current_s = unparsed[i];
 		if current_s == "(" {
-			let matching_paren = matching_paren(
-					unparsed.slice_from(i+1)
-				).expect("Unclosed delimiter");
-			parsed.push(SExpr(parse_expressions(
-						unparsed.slice(i+1,
-							i+1+matching_paren))));
-			i = i+matching_paren+1;
+			if let Some(matching_paren) = matching_paren(unparsed.slice_from(i+1)) {
+				let exprs_to_parse = unparsed.slice(i+1, i+1+matching_paren);
+				parsed.push(SExpr(parse_expressions(exprs_to_parse)));
+				i = i+matching_paren+1;
+			} else {
+				scheme_alert(SA::Unclosed, SAT::Err);
+			}
+		} else if current_s == "'" && i+1 < unparsed.len() && unparsed[i+1] == "(" {
+			i += 1;
+			if let Some(matching_paren) = matching_paren(unparsed.slice_from(i+1)) {
+				let list_item_to_parse = unparsed.slice(i+1, i+1+matching_paren);
+				let list = SExpr(parse_expressions(list_item_to_parse));
+				// TODO: add macro to create Lists similar to vec![]
+				let quoted = SExpr(List::from_vec(vec![SBinding("quote".to_string()),
+							list]));
+				parsed.push(quoted);
+				i = i+matching_paren+1;
+			} else {
+				scheme_alert(SA::Unclosed, SAT::Err);
+			}
 		} else if let Some(f) = parse_number(current_s) {
 			parsed.push(SNum(f));
 		} else if let Some(s) = parse_str_literal(current_s) {
@@ -390,7 +477,7 @@ impl<'a> Env<'a> {
 			}
 		}
 		scheme_alert(SA::Undef(to_get), self.error_mode);
-		unity()
+		unit()
 	}
 
 	fn pop_var_def(&mut self) -> (String, SEle) {
@@ -463,7 +550,7 @@ impl<'a> Env<'a> {
 			if n_args != evaled_args.len() {
 				scheme_alert(SA::ArityMiss("_", n_args,"!=",evaled_args.len()),
 					env.error_mode);
-				return unity();
+				return unit();
 			}
 			// Bind and push supplied args to environment
 			for (k, v) in arg_names.clone().into_iter().zip(evaled_args.into_iter()) {
@@ -506,7 +593,7 @@ impl<'a> Env<'a> {
 	fn eval_multiple(&mut self, exprs: List) -> SEle {
 		let mut it = exprs.into_iter();
 		if it.len() == 0 {
-			return unity();
+			return unit();
 		}
 		for expr in range(0, it.len()-1).map(|_| it.next()) {
 			self.elem_value(expr.unwrap());
@@ -634,7 +721,7 @@ fn main(){
 			if ops.len() != 2 {
 				scheme_alert(SA::ArityMiss("remainder", ops.len(),"!=",2),
 					env.error_mode);
-				unity()
+				unit()
 			} else {
 				let e2 = env.elem_value(ops.pop().unwrap());
 				let e1 = env.elem_value(ops.pop().unwrap());
@@ -645,18 +732,16 @@ fn main(){
 								format!("{}, {}", t1.variant(),
 									t2.variant()).as_slice()),
 							env.error_mode);
-						unity()
+						unit()
 					}
 				}
 			}
 		),
-		// ("lambda", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
-		// ),
 		("define", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
 			if ops.len() < 2 {
 				scheme_alert(SA::ArityMiss("define", ops.len(),"<",2),
 					env.error_mode);
-				unity()
+				unit()
 			} else {
 				match ops.remove(0).unwrap() {
 					SBinding(b) =>
@@ -670,7 +755,7 @@ fn main(){
 								ops)),
 					_ => scheme_alert(SA::Bad("define body"), env.error_mode),
 				}
-				unity()
+				unit()
 			}		
 		),
 
@@ -680,7 +765,7 @@ fn main(){
 			}
 			println!("{}", env.elem_value(ops.pop().expect(
 				"Could not retrieve argument")));
-			unity()
+			unit()
 		}),
 		("begin", |env: &mut Env, _: Option<Vec<String>>, ops, _: Option<SEle>| {
 			env.eval_block(ops)
@@ -703,7 +788,7 @@ fn main(){
 			if ops.len() != 1 {
 				scheme_alert(SA::ArityMiss("numbers?", ops.len(),"!=",1),
 					env.error_mode);
-				unity()
+				unit()
 			} else {
 				if let SNum(_) = env.elem_value(ops.pop().unwrap()) {
 					SBool(true)
@@ -721,19 +806,19 @@ fn main(){
 				SBool(env.elem_is_true(SExpr(ops)))
 			} else {
 				scheme_alert(SA::WrongType("Number", "_"), env.error_mode);
-				unity()
+				unit()
 			}
 		),
 		("cond", |env: &mut Env, _: Option<Vec<String>>, ops, _: Option<SEle>| {
 			if ops.len() < 2 {
 				scheme_alert(SA::ArityMiss("cond", ops.len(),"<",2), env.error_mode);
-				return unity();
+				return unit();
 			}
 			for clause in ops.into_iter() {
 				if let SExpr(mut clause_v) = clause {
 					if clause_v.len() != 2 {
 						scheme_alert(SA::Bad("cond clause"), env.error_mode);
-						return unity();
+						return unit();
 					}
 					let test = clause_v.remove(0).unwrap();
 					if let SBinding(maybe_else) = test {
@@ -749,15 +834,15 @@ fn main(){
 					}
 				} else {
 					scheme_alert(SA::Bad("cond clause"), env.error_mode);
-					return unity();
+					return unit();
 				}
 			}
-			unity()			
+			unit()			
 		}),
 		("if", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
 			if ops.len() != 3  {
 				scheme_alert(SA::ArityMiss("if", ops.len(),"!=",3), env.error_mode);
-				unity()
+				unit()
 			} else {
 				let alternative = ops.pop().unwrap();
 				let consequense = ops.pop().unwrap();
@@ -774,15 +859,15 @@ fn main(){
 
 		("var-stack", |env: &mut Env, _: Option<Vec<String>>, _, _: Option<SEle>| {
 			println!("var stack: {}", env.var_defs);
-			unity()
+			unit()
 		}),
 		("proc-stack", |env: &mut Env, _: Option<Vec<String>>, _, _: Option<SEle>| {
 			println!("proc stack: {}", env.fn_defs);
-			unity()
+			unit()
 		}),
 		("newline", |_: &mut Env, _: Option<Vec<String>>, _, _: Option<SEle>| {
 			println!("");
-			unity()
+			unit()
 		}),
 	];
 	let std_vars = vec![
