@@ -3,6 +3,7 @@ extern crate getopts;
 
 use std::mem::transmute;
 use std::f64::consts::PI;
+use std::f64::NAN;
 use std::fmt;
 use std::io;
 use std::mem;
@@ -32,25 +33,46 @@ enum SchemeAlert<'a> {
 	ArityMiss(&'a str, uint, &'a str, uint),
 	Bad(&'a str),
 	Undef(&'a str),
+	NaN(SEle),
+	Unclosed,
 }
 
-fn scheme_alert(alert: SA, a_type: SchemeAlertType) {
+fn scheme_alert(alert: SA, a_type: &SchemeAlertType) {
 	match alert {
 		SA::Unexp(s) => println!("; {}: Unexpected `{}`", a_type, s),
 		SA::WrongType(exp, got) => println!("; {}: Wrong type. Expected `{}`, found `{}`",
 				a_type, exp, got),
 		SA::Undef(s) => println!("; {}: Undefined variable `{}`", a_type, s),
 		SA::Bad(s) => println!("; {}: Bad `{}`", a_type, s),
+		SA::NaN(e) => println!("; {}: `{}: {}` is not a number", a_type, e.variant(), e),
+		SA::Unclosed => println!("; {}: Unclosed delimiter", a_type),
 		SA::ArityMiss(s, got, vs, exp) => println!("; {}: Arity missmatch in `{}`, {} {} {}",
 				a_type, s, got, vs, exp),
 	}
-	if let SAT::Error = a_type {
+	if let &SAT::Error = a_type {
 		panic!()
 	}
 }
 
+struct MoveListItems {
+	list: List
+}
+
+impl Iterator<SEle> for MoveListItems {
+	fn next(&mut self) -> Option<SEle> {
+		self.list.pop_head()
+	}
+}
+
+impl MoveListItems {
+	fn peek(&self) -> Option<&SEle> {
+		self.list.head()
+	}
+}
+
+#[deriving(Clone, PartialEq)]
 enum List {
-	Cons(SEle, Box<List>),
+	Cons(Box<SEle>, Box<List>),
 	Nil
 }
 
@@ -64,44 +86,101 @@ impl fmt::Show for List {
 }
 
 impl List {
-	fn swap_val(&mut self, val: &mut Box<List>) -> Result<(), ()> {
-		if let &List::Cons(ref mut self_val, _) = self {
+	fn new() -> List {
+		List::Nil
+	}
+
+	fn with_body(head: SEle, tail: List) -> List {
+		List::Cons(box head, box tail)
+	}
+
+	fn with_head(head: SEle) -> List {
+		List::Cons(box head, box List::Nil)
+	}
+
+	fn from_vec(vals: Vec<SEle>) -> List {
+		let mut list = List::new();
+		for val in vals.into_iter() {
+			list.push(val);
+		}
+		list
+	}
+
+	fn len(&self) -> uint {
+		if self == &List::Nil {
+			0
+		} else {
+			let mut len = 0;
+			let mut current = self;
+			while let Some(l) = current.tail() {
+				current = l;
+				len += 1;
+			}
+			len
+		}
+	}
+
+	fn into_iter(self) -> MoveListItems {
+		MoveListItems{list: self}
+	}
+
+	fn swap_val(&mut self, val: &mut SEle) -> Result<(), ()> {
+		if let &List::Cons(box ref mut self_val, _) = self {
 			mem::swap(val, self_val);
-			Ok(()))
+			Ok(())
 		} else {
 			Err(())
 		}
 	}
 
-	fn swap_link(&mut self, link: &mut Box<List>) -> Result<(), ()> {
-		if let &List::Cons(_, ref mut self_link) = self {
+	fn swap_link(&mut self, link: &mut List) -> Result<(), ()> {
+		if let &List::Cons(_, box ref mut self_link) = self {
 			mem::swap(link, self_link);
-			Ok(()))
+			Ok(())
 		} else {
 			Err(())
 		}
 	}
 
-	fn car(&mut self) -> Option<&SEle> {
-		if let &List::Cons(ref val, _) = self {
+	/// Returns a reference the first value in the list.
+	fn head(&self) -> Option<&SEle> {
+		if let &List::Cons(box ref val, _) = self {
 			Some(val)
 		} else {
 			None
 		}
 	}
 
-	fn cdr(&mut self) -> Option<&List> {
-		if let &List::Cons(_, ref list) = self {
+	fn head_mut(&mut self) -> Option<&mut SEle> {
+		if let &List::Cons(box ref mut val, _) = self {
+			Some(val)
+		} else {
+			None
+		}
+	}
+
+	/// Returns a reference a list containing all but the first value.
+	fn tail(&self) -> Option<&List> {
+		if let &List::Cons(_, box ref list) = self {
 			Some(list)
 		} else {
 			None
 		}
 	}
 
-	fn car_pop(&mut self) -> Option<SEle> {
-		if let mut Some(cdr) = self.cdr_pop() {
-			mem::swap(&mut *cdr, self);
-			if let &List::Cons(val, _) = *cdr {
+	fn tail_mut(&mut self) -> Option<&mut List> {
+		if let &List::Cons(_, box ref mut list) = self {
+			Some(list)
+		} else {
+			None
+		}
+	}
+
+	/// Pops the first value from the list. `self` is now its old tail.
+	fn pop_head(&mut self) -> Option<SEle> {
+		if let Some(mut cdr) = self.pop_tail() {
+			mem::swap(&mut cdr, self);
+			if let List::Cons(box val, _) = cdr {
 				Some(val)
 			} else {
 				None
@@ -111,10 +190,11 @@ impl List {
 		}
 	}
 
-	fn cdr_pop(&mut self) -> Option<List> {
-		let mut cdr = box List::Nil;
-		if let &List::Cons(_, ref mut self_link) = self {
-			if let Err(_) = self.swap_link(&mut cdr, self_cdr) {
+	/// Pops the tail from the list. `self` is now only the first entry.
+	fn pop_tail(&mut self) -> Option<List> {
+		let mut cdr = List::Nil;
+		if let &List::Cons(_, _) = self {
+			if let Err(_) = self.swap_link(&mut cdr) {
 				return None;
 			}
 			Some(cdr)
@@ -123,26 +203,55 @@ impl List {
 		}
 	}
 
+	/// Pushes an element to the end of the list.
 	fn push(&mut self, ele: SEle) {
-		if let List::Cons(_, ref mut self_link) = self {
-			match self_link {
-				&mut box List::Nil => {
-					let to_swap = List::from_ele(ele);
-					self.swap_link(to_swap).unwrap();
-				},
-				ref mut &mut box x => x.push(ele)
+		match self {
+			&List::Cons(_, box List::Nil) => {
+				let mut to_swap = List::with_head(ele);
+				self.swap_link(&mut to_swap).unwrap();
+			},
+			&List::Cons(_, box ref mut self_link) => self_link.push(ele),
+			_ => {
+				let mut new_self = List::Cons(box ele, box List::Nil);
+				mem::swap(self, &mut new_self);
 			}
-		} else {
-			let mut new_self = List::Cons(ele, box List::Nil);
-			mem::swap(self, &mut new_self);
 		}
 	}
 
+	/// Inserts an element at the beginning of the list.
 	fn prepush(&mut self, ele: SEle) {
 		let mut local_self = List::Nil;
 		mem::swap(self, &mut local_self);
-		let mut new_self = List::Cons(ele, box local_self);
+		let mut new_self = List::Cons(box ele, box local_self);
 		mem::swap(self, &mut new_self);
+	}
+}
+
+impl FromIterator<SEle> for List {
+	fn from_iter<T: Iterator<SEle>>(mut iterator: T) -> List {
+		let mut list = List::new();
+		for element in iterator {
+			list.push(element);
+		}
+		list
+	}
+}
+
+impl Index<uint, SEle> for List {
+	fn index(&self, index: &uint) -> &SEle {
+		let mut current = self;
+		for _ in range(0, *index) {
+			if let Some(tail) = current.tail() {
+				current = tail;
+			} else {
+				panic!("List index out of range");
+			}
+		}
+		if let Some(val) = current.head() {
+			val
+		} else {
+			panic!("List index out of range")
+		}
 	}
 }
 
@@ -157,6 +266,7 @@ enum SEle {
 	SSymbol(String),
 	SBool(bool),
 	SList(List)
+	// TODO: Add procedure type. This is what lambda will return
 }
 
 impl SEle {
@@ -324,7 +434,7 @@ fn parse_symbol(s: &str) -> Option<&str> {
 fn parse_bool(s: &str) -> Option<bool> {
 	if s == "#t" {
 		Some(true)
-	} s == "#f" {
+	} else if s == "#f" {
 		Some(false)
 	} else {
 		None
@@ -342,7 +452,7 @@ fn parse_expressions(unparsed: &[&str]) -> List {
 				parsed.push(SExpr(parse_expressions(exprs_to_parse)));
 				i = i+matching_paren+1;
 			} else {
-				scheme_alert(SA::Unclosed, SAT::Err);
+				scheme_alert(SA::Unclosed, &SAT::Error);
 			}
 		} else if current_s == "'" && i+1 < unparsed.len() && unparsed[i+1] == "(" {
 			i += 1;
@@ -355,7 +465,7 @@ fn parse_expressions(unparsed: &[&str]) -> List {
 				parsed.push(quoted);
 				i = i+matching_paren+1;
 			} else {
-				scheme_alert(SA::Unclosed, SAT::Err);
+				scheme_alert(SA::Unclosed, &SAT::Error);
 			}
 		} else if let Some(f) = parse_number(current_s) {
 			parsed.push(SNum(f));
@@ -376,43 +486,6 @@ fn parse_expressions(unparsed: &[&str]) -> List {
 fn parse_source_text(src: String) -> List {
 	let splitted = split_source_text(src.as_slice());
 	parse_expressions(splitted.as_slice())
-}
-
-fn str_wrap_begin(s: String) -> String {
-	format!("(begin {})", s)
-}
-
-fn scm_add_iter(env: &mut Env, sum: f64, mut operands: List) -> f64 {
-	if let Some(expr) = operands.pop() {
-		match env.elem_value(expr) {
-			SNum(x) => scm_add_iter(env, sum + x, operands),
-			x => panic!("`{}` is NaN", x)
-		}
-	} else {
-		sum
-	}
-}
-
-fn scm_sub_iter(env: &mut Env, diff: f64, mut operands: List) -> f64 {
-	if let Some(expr) = operands.pop() {
-		match env.elem_value(expr) {
-			SNum(x) => scm_sub_iter(env, diff - x, operands),
-			x => panic!("`{}` is NaN", x)
-		}
-	} else {
-		diff
-	}
-}
-
-fn scm_div_iter(env: &mut Env, numerator: f64, mut denoms: List) -> f64 {
-	if let Some(expr) = denoms.pop() {
-		match env.elem_value(expr) {
-			SNum(x) => scm_div_iter(env, numerator / x, denoms),
-			x => panic!("`{}` is NaN", x)
-		}
-	} else {
-		numerator
-	}
 }
 
 // Arguments: Environment, Argument names, Argument values, Body to evaluate
@@ -476,7 +549,7 @@ impl<'a> Env<'a> {
 				continue;
 			}
 		}
-		scheme_alert(SA::Undef(to_get), self.error_mode);
+		scheme_alert(SA::Undef(to_get), &self.error_mode);
 		unit()
 	}
 
@@ -521,9 +594,9 @@ impl<'a> Env<'a> {
 	}
 
 	// Extract the procedure name and argument names for the `define` header `head`
-	fn dismantle_f_head(&mut self, head: SEle) -> (String, Vec<String>) {
+	fn dismantle_fn_head(&mut self, head: SEle) -> (String, Vec<String>) {
 		if let SExpr(mut expr) = head {
-			if let SBinding(fn_bnd) = expr.remove(0).unwrap() {
+			if let SBinding(fn_bnd) = expr.pop_head().unwrap() {
 				let var_names = expr.into_iter().map(|e|
 						if let SBinding(var_bnd) = e {
 							var_bnd
@@ -541,7 +614,7 @@ impl<'a> Env<'a> {
 	}
 
 	fn define_fn(&mut self, head: SEle, body: SEle) {
-		let (fn_binding, arg_names) = self.dismantle_f_head(head);
+		let (fn_binding, arg_names) = self.dismantle_fn_head(head);
 
 		let defined_f: ScmFn<'a> = |env, arg_names_opt, ops, body| {
 			let evaled_args = env.eval_args(ops);
@@ -549,7 +622,7 @@ impl<'a> Env<'a> {
 			let n_args = arg_names.len();
 			if n_args != evaled_args.len() {
 				scheme_alert(SA::ArityMiss("_", n_args,"!=",evaled_args.len()),
-					env.error_mode);
+					&env.error_mode);
 				return unit();
 			}
 			// Bind and push supplied args to environment
@@ -564,10 +637,12 @@ impl<'a> Env<'a> {
 		self.fn_defs.push(FnDef::new_full(fn_binding, arg_names, defined_f, body))
 	}
 
+	// TODO: Fix to work with empty lists by remedying the `unwrap`
+	// TODO: Fix to work with procedures as first element, like the result of a lambda
 	/// Evaluate the Scheme expression, assuming `expr` is a list of the
 	/// expression body starting with a procedure binding
 	fn eval_expr(&mut self, mut expr: List) -> SEle {
-		match expr.remove(0).unwrap() {
+		match expr.pop_head().unwrap() {
 			SBinding(s) => {
 				let ele = call_proc(self, s.as_slice(), expr);
 				if let SExpr(inner_expr) = ele {
@@ -590,15 +665,17 @@ impl<'a> Env<'a> {
 		}
 	}
 
-	fn eval_multiple(&mut self, exprs: List) -> SEle {
-		let mut it = exprs.into_iter();
-		if it.len() == 0 {
-			return unit();
+	fn eval_multiple(&mut self, exprs: List) -> SEle {	
+		if exprs != List::Nil {
+			let mut it = exprs.into_iter();
+			while let Some(expr) = it.next() {
+				if it.peek() == None {
+					return self.elem_value(expr);
+				}
+				self.elem_value(expr);
+			}
 		}
-		for expr in range(0, it.len()-1).map(|_| it.next()) {
-			self.elem_value(expr.unwrap());
-		}
-		self.elem_value(it.next().unwrap())
+		unit()
 	}
 
 	// This is run when there are multiple statements in a single expression body, like in a
@@ -629,6 +706,48 @@ impl<'a> Env<'a> {
 			},
 			_ => false
 		}
+	}
+}
+
+fn scm_add_iter(env: &mut Env, sum: f64, mut terms: List) -> f64 {
+	if let Some(expr) = terms.pop_head() {
+		match env.elem_value(expr) {
+			SNum(x) => scm_add_iter(env, sum + x, terms),
+			x => {
+				scheme_alert(SA::NaN(x), &env.error_mode);
+				NAN
+			}
+		}
+	} else {
+		sum
+	}
+}
+
+fn scm_sub_iter(env: &mut Env, diff: f64, mut terms: List) -> f64 {
+	if let Some(expr) = terms.pop_head() {
+		match env.elem_value(expr) {
+			SNum(x) => scm_sub_iter(env, diff - x, terms),
+			x => {
+				scheme_alert(SA::NaN(x), &env.error_mode);
+				NAN
+			}
+		}
+	} else {
+		diff
+	}
+}
+
+fn scm_div_iter(env: &mut Env, numerator: f64, mut denoms: List) -> f64 {
+	if let Some(expr) = denoms.pop_head() {
+		match env.elem_value(expr) {
+			SNum(x) => scm_div_iter(env, numerator / x, denoms),
+			x => {
+				scheme_alert(SA::NaN(x), &env.error_mode);
+				NAN
+			}
+		}
+	} else {
+		numerator
 	}
 }
 
@@ -664,7 +783,7 @@ fn interactive_shell(env: &mut Env) {
 				print!("\n>> {}", String::from_char((n * -2) as uint, ' '))
 			},
 			_ if rparen_surplus > 0 => {
-				scheme_alert(SA::Unexp(")"), SAT::Warn);
+				scheme_alert(SA::Unexp(")"), &SAT::Warn);
 				token_buf.clear();
 				rparen_surplus = 0;
 				print!(">> ");
@@ -681,20 +800,20 @@ fn interactive_shell(env: &mut Env) {
 }
 
 fn elems_wrap_begin(mut elems: List) -> SEle {
-	elems.insert(0, SBinding("begin".to_string()));
-	SExpr(elems)
+	SExpr(List::with_body(SBinding("begin".to_string()), elems))
 }
 
 fn main(){
 	// Scheme Standard library
+	// TODO: any other way than using len to measure num of args? Unefficient with List
 	let std_procs: Vec<(&str, ScmFn)> = vec![
-		("+", |env: &mut Env, _: Option<Vec<String>>, ops, _: Option<SEle>|
-			SNum(scm_add_iter(env, 0.0, ops)
+		("+", |env: &mut Env, _: Option<Vec<String>>, args, _: Option<SEle>|
+			SNum(scm_add_iter(env, 0.0, args)
 		)),
-		("-", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
-			SNum(if let Some(expr) = ops.remove(0) {
+		("-", |env: &mut Env, _: Option<Vec<String>>, mut args, _: Option<SEle>|
+			SNum(if let Some(expr) = args.pop_head() {
 				if let SNum(x) = env.elem_value(expr) {
-					scm_sub_iter(env, x, ops)
+					scm_sub_iter(env, x, args)
 				} else {
 					panic!("NaN")
 				}
@@ -702,13 +821,13 @@ fn main(){
 				0.0
 			}
 		)),
-		("/", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
-			SNum(if let Some(expr) = ops.remove(0) {
+		("/", |env: &mut Env, _: Option<Vec<String>>, mut args, _: Option<SEle>|
+			SNum(if let Some(expr) = args.pop_head() {
 				if let SNum(x) = env.elem_value(expr) {
-					if ops.len() < 1 {
+					if args.len() < 1 {
 						1.0 / x
 					} else {
-						scm_div_iter(env, x, ops)
+						scm_div_iter(env, x, args)
 					}
 				} else {
 					panic!("NaN")
@@ -717,66 +836,66 @@ fn main(){
 				panic!("Wrong number of arguments")
 			}
 		)),
-		("remainder", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
-			if ops.len() != 2 {
-				scheme_alert(SA::ArityMiss("remainder", ops.len(),"!=",2),
-					env.error_mode);
+		("remainder", |env: &mut Env, _: Option<Vec<String>>, mut args, _: Option<SEle>|
+			if args.len() != 2 {
+				scheme_alert(SA::ArityMiss("remainder", args.len(),"!=",2),
+					&env.error_mode);
 				unit()
 			} else {
-				let e2 = env.elem_value(ops.pop().unwrap());
-				let e1 = env.elem_value(ops.pop().unwrap());
+				let e1 = env.elem_value(args.pop_head().unwrap());
+				let e2 = env.elem_value(args.pop_head().unwrap());
 				match (e1, e2) {
 					(SNum(n1), SNum(n2)) => SNum(n1 % n2),
 					(t1, t2) => {
 						scheme_alert(SA::WrongType("Number, Number",
 								format!("{}, {}", t1.variant(),
 									t2.variant()).as_slice()),
-							env.error_mode);
+							&env.error_mode);
 						unit()
 					}
 				}
 			}
 		),
-		("define", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
-			if ops.len() < 2 {
-				scheme_alert(SA::ArityMiss("define", ops.len(),"<",2),
-					env.error_mode);
+		("define", |env: &mut Env, _: Option<Vec<String>>, mut args, _: Option<SEle>|
+			if args.len() < 2 {
+				scheme_alert(SA::ArityMiss("define", args.len(),"<",2),
+					&env.error_mode);
 				unit()
 			} else {
-				match ops.remove(0).unwrap() {
+				match args.pop_head().unwrap() {
 					SBinding(b) =>
-						if ops.len() != 1 {
+						if args.len() != 1 {
 							scheme_alert(SA::ArityMiss("define",
-								ops.len(),"<",2), env.error_mode);
+								args.len(),"<",2), &env.error_mode);
 						} else {
-							env.define_var(b, ops.pop().unwrap());
+							env.define_var(b, args.pop_head().unwrap());
 						},
 					SExpr(expr) => env.define_fn(SExpr(expr), elems_wrap_begin(
-								ops)),
-					_ => scheme_alert(SA::Bad("define body"), env.error_mode),
+								args)),
+					_ => scheme_alert(SA::Bad("define body"), &env.error_mode),
 				}
 				unit()
 			}		
 		),
 
-		("display", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>| {
-			if ops.len() != 1 {
+		("display", |env: &mut Env, _: Option<Vec<String>>, mut args, _: Option<SEle>| {
+			if args.len() != 1 {
 				panic!("Arity missmatch")
 			}
-			println!("{}", env.elem_value(ops.pop().expect(
+			println!("{}", env.elem_value(args.pop_head().expect(
 				"Could not retrieve argument")));
 			unit()
 		}),
-		("begin", |env: &mut Env, _: Option<Vec<String>>, ops, _: Option<SEle>| {
-			env.eval_block(ops)
+		("begin", |env: &mut Env, _: Option<Vec<String>>, args, _: Option<SEle>| {
+			env.eval_block(args)
 		}),
-		("eqv?", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
-			if ops.len() == 0 || ops.len() == 1 {
+		("eqv?", |env: &mut Env, _: Option<Vec<String>>, mut args, _: Option<SEle>|
+			if args.len() == 0 || args.len() == 1 {
 				SBool(true)
 			} else {
-				let e1 = ops.pop().unwrap();
+				let e1 = args.pop_head().unwrap();
 				let v1 = env.elem_value(e1);
-				for e2 in ops.into_iter() {
+				for e2 in args.into_iter() {
 					if v1 != env.elem_value(e2) {
 						return SBool(false);
 					}
@@ -784,75 +903,79 @@ fn main(){
 				SBool(true)
 			}
 		),
-		("number?", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
-			if ops.len() != 1 {
-				scheme_alert(SA::ArityMiss("numbers?", ops.len(),"!=",1),
-					env.error_mode);
+		("number?", |env: &mut Env, _: Option<Vec<String>>, mut args, _: Option<SEle>|
+			if args.len() != 1 {
+				scheme_alert(SA::ArityMiss("numbers?", args.len(),"!=",1),
+					&env.error_mode);
 				unit()
 			} else {
-				if let SNum(_) = env.elem_value(ops.pop().unwrap()) {
+				if let SNum(_) = env.elem_value(args.pop_head().unwrap()) {
 					SBool(true)
 				} else {
 					SBool(false)
 				}
 			}
 		),
-		("=", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
+		("=", |env: &mut Env, _: Option<Vec<String>>, mut args, _: Option<SEle>|
 			// TODO: use create macro to artificially construct scheme expression
-			if ops.clone().into_iter().all(|e| env.elem_is_true(SExpr(vec![
-						SBinding("number?".to_string()), e])))
+			if args.clone().into_iter().all(|e| {
+					let expr = SExpr(List::from_vec(vec![
+						SBinding("number?".to_string()), e]));
+					env.elem_is_true(expr)
+			})
 			{
-				ops.insert(0, SBinding("eqv?".to_string()));
-				SBool(env.elem_is_true(SExpr(ops)))
+				// TODO: use List.prepush()?
+				args = List::with_body(SBinding("eqv?".to_string()), args);
+				SBool(env.elem_is_true(SExpr(args)))
 			} else {
-				scheme_alert(SA::WrongType("Number", "_"), env.error_mode);
+				scheme_alert(SA::WrongType("Number", "_"), &env.error_mode);
 				unit()
 			}
 		),
-		("cond", |env: &mut Env, _: Option<Vec<String>>, ops, _: Option<SEle>| {
-			if ops.len() < 2 {
-				scheme_alert(SA::ArityMiss("cond", ops.len(),"<",2), env.error_mode);
+		("cond", |env: &mut Env, _: Option<Vec<String>>, args, _: Option<SEle>| {
+			if args.len() < 2 {
+				scheme_alert(SA::ArityMiss("cond", args.len(),"<",2), &env.error_mode);
 				return unit();
 			}
-			for clause in ops.into_iter() {
+			for clause in args.into_iter() {
 				if let SExpr(mut clause_v) = clause {
 					if clause_v.len() != 2 {
-						scheme_alert(SA::Bad("cond clause"), env.error_mode);
+						scheme_alert(SA::Bad("cond clause"), &env.error_mode);
 						return unit();
 					}
-					let test = clause_v.remove(0).unwrap();
+					let test = clause_v.pop_head().unwrap();
 					if let SBinding(maybe_else) = test {
 						if maybe_else.as_slice() == "else" {
-							return clause_v.pop().unwrap();
+							return clause_v.pop_head().unwrap();
 						}
 					} else {
 						let test_val = env.elem_value(test);
 						if match test_val { SBool(b) => b, _ => true } {
-							return env.elem_value(clause_v.pop()
+							return env.elem_value(clause_v.pop_head()
 									.unwrap());
 						}
 					}
 				} else {
-					scheme_alert(SA::Bad("cond clause"), env.error_mode);
+					scheme_alert(SA::Bad("cond clause"), &env.error_mode);
 					return unit();
 				}
 			}
 			unit()			
 		}),
-		("if", |env: &mut Env, _: Option<Vec<String>>, mut ops, _: Option<SEle>|
-			if ops.len() != 3  {
-				scheme_alert(SA::ArityMiss("if", ops.len(),"!=",3), env.error_mode);
+		("if", |env: &mut Env, _: Option<Vec<String>>, mut args, _: Option<SEle>|
+			if args.len() != 3  {
+				scheme_alert(SA::ArityMiss("if", args.len(),"!=",3), &env.error_mode);
 				unit()
 			} else {
-				let alternative = ops.pop().unwrap();
-				let consequense = ops.pop().unwrap();
-				let condition = ops.pop().unwrap();
+				let condition = args.pop_head().unwrap();
+				let consequense = args.pop_head().unwrap();
+				let alternative = args.pop_head().unwrap();
 				let scm_else = SBinding("else".to_string());
-				let cond = SExpr(vec![
+				let cond = SExpr(List::from_vec(vec![
 					SBinding("cond".to_string()),
-					SExpr(vec![condition, consequense]),
-					SExpr(vec![scm_else, alternative])
-				]);
+					SExpr(List::from_vec(vec![condition, consequense])),
+					SExpr(List::from_vec(vec![scm_else, alternative]))
+				]));
 				env.elem_value(cond)
 			}		
 		),
@@ -885,11 +1008,12 @@ fn main(){
 
 	let maybe_input = cmdline::get_input();
 	if let Some(input) = maybe_input {
-		let mut parsed = parse_source_text(str_wrap_begin(input));
+		let begin_wrapped = format!("(begin {})", input);
+		let mut parsed = parse_source_text(begin_wrapped);
 		if parsed.len() != 1 {
 			panic!("Parsed source is invalid")
 		}
-		env.elem_value(parsed.pop().expect("Failed to retrieve expression"));
+		env.elem_value(parsed.pop_head().unwrap());
 	} else {
 		interactive_shell(&mut env);
 	}
