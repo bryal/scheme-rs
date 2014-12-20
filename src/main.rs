@@ -1,4 +1,5 @@
 #![feature(globs)]
+#![feature(unboxed_closures)]
 extern crate getopts;
 
 use std::io;
@@ -77,7 +78,7 @@ fn main(){
 	let mut procs = Vec::with_capacity(std_procs.len());
 	let mut vars = Vec::with_capacity(std_vars.len());
 	for (name, cls) in std_procs.into_iter() {
-		procs.push(ProcDef::new_basic(name.to_string(), cls));
+		procs.push(ProcDef::new(name.to_string(), cls));
 	}
 	for (k, v) in std_vars.into_iter() {
 		vars.push((k.to_string(), v));

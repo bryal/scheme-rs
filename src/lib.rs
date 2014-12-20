@@ -1,6 +1,7 @@
 #![allow(dead_code)]
-#![feature(globs)]
 #![allow(unused_attributes)]
+#![feature(globs)]
+#![feature(unboxed_closures)]
 
 use std::fmt;
 use std::mem;
@@ -297,14 +298,12 @@ pub fn unit() -> SEle {
 }
 
 // Arguments: Environment, Argument names, Argument values, Body to evaluate
-pub type ScmFn<'a> = |&mut Env, Option<Vec<String>>, List, Option<SEle>|:'a -> SEle;
+pub type ScmFn<'a> = Fn(&mut Env, List) -> SEle + 'a;
 
 // TODO: Make use of unboxed closures instead of passing around `arg_names` and `body`
 pub struct ProcDef<'a> {
 	name: String,
-	arg_names: Option<Vec<String>>,
-	closure: ScmFn<'a>,
-	body: Option<SEle>
+	closure: Box<ScmFn<'a>>,
 }
 
 impl<'a> fmt::Show for ProcDef<'a> {
@@ -314,12 +313,8 @@ impl<'a> fmt::Show for ProcDef<'a> {
 }
 
 impl<'a> ProcDef<'a> {
-	pub fn new_basic(name: String, cls: ScmFn<'a>) -> ProcDef<'a> {
-		ProcDef{name: name, arg_names: None, closure: cls, body: None}
-	}
-
-	pub fn new_full(name: String, args: Vec<String>, cls: ScmFn<'a>, body: SEle) -> ProcDef<'a> {
-		ProcDef{name: name, arg_names: Some(args), closure: cls, body: Some(body)}
+	pub fn new(name: String, cls: Box<ScmFn<'a>>) -> ProcDef<'a> {
+		ProcDef{name: name, closure: cls}
 	}
 }
 
@@ -424,9 +419,8 @@ impl<'a> Env<'a> {
 	pub fn define_proc(&mut self, head: SEle, body: SEle) {
 		let (fn_binding, arg_names) = self.dismantle_proc_head(head);
 
-		let defined_f: ScmFn<'a> = |env, arg_names_opt, ops, body| {
-			let evaled_args = env.eval_args(ops);
-			let arg_names = arg_names_opt.unwrap();
+		let defined_f = box move |&: env: &mut Env, args: List| {
+			let evaled_args = env.eval_args(args);
 			let n_args = arg_names.len();
 			if n_args != evaled_args.len() {
 				scheme_alert(ScmAlert::ArityMiss("_", n_args,"!=",evaled_args.len()),
@@ -437,12 +431,12 @@ impl<'a> Env<'a> {
 			for (k, v) in arg_names.clone().into_iter().zip(evaled_args.into_iter()) {
 				env.define_var(k, v);
 			}
-			let result = env.elem_value(body.unwrap());
+			let result = env.elem_value(body.clone());
 			env.pop_var_defs(n_args);
 			result
 		};
 
-		self.fn_defs.push(ProcDef::new_full(fn_binding, arg_names, defined_f, body))
+		self.fn_defs.push(ProcDef::new(fn_binding, defined_f))
 	}
 
 	// TODO: Fix to work with empty lists by remedying the `unwrap`
@@ -520,6 +514,5 @@ impl<'a> Env<'a> {
 fn call_proc(env: *mut Env, f_name: &str, args: List) -> SEle {
 	let env_brw: &mut Env = unsafe{mem::transmute(&mut *env)};
 	let fndef = env_brw.get_proc(f_name);
-	(fndef.closure)(unsafe{mem::transmute(&mut *env)}, fndef.arg_names.clone(), args,
-		fndef.body.clone())
+	(*fndef.closure).call((unsafe{mem::transmute(&mut *env)}, args))
 }
