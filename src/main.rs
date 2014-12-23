@@ -6,10 +6,12 @@ use std::io;
 
 use lib::{
 	Env,
-	ProcDef,
+	ProcOrFunc,
 	ScmAlert,
 	ScmAlertMode,
-	scheme_alert};
+	scheme_alert,
+	scheme_stdlib};
+use lib::SEle::SProc;
 use parse::{
 	split_source_text,
 	parse_expressions};
@@ -17,7 +19,6 @@ use parse::{
 mod cmdline;
 mod lib;
 mod parse;
-mod scheme_stdlib;
 
 fn to_strings(slc: &[&str]) -> Vec<String> {
 	slc.iter().map(|s| s.to_string()).collect()
@@ -75,15 +76,13 @@ fn interactive_shell(env: &mut Env) {
 
 fn main(){
 	let (std_procs, std_vars) = scheme_stdlib::standard_library();
-	let mut procs = Vec::with_capacity(std_procs.len());
 	let mut vars = Vec::with_capacity(std_vars.len());
-	for (name, func) in std_procs.into_iter() {
-		procs.push(ProcDef::new_func(name.to_string(), func));
-	}
 	for (name, val) in std_vars.into_iter() {
 		vars.push((name.to_string(), val));
 	}
-	let mut env = Env::new_strict(procs, vars);
+	for (name, func) in std_procs.into_iter() {
+		vars.push((name.to_string(), SProc(box ProcOrFunc::Func(func))));
+	}
 
 	let maybe_input = cmdline::get_input();
 	if let Some(input) = maybe_input {
@@ -93,8 +92,10 @@ fn main(){
 		if parsed.len() != 1 {
 			panic!("Parsed source is invalid")
 		}
+		let mut env = Env::new_strict(vars);
 		env.elem_value(parsed.pop_head().unwrap());
 	} else {
+		let mut env = Env::new_lenient(vars);
 		interactive_shell(&mut env);
 	}
 }

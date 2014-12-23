@@ -1,9 +1,20 @@
 use std::f64::consts::PI;
 use std::f64::NAN;
 
-use lib::{List, SEle, Env, scheme_alert, ScmFn, unit, ScmAlert};
-use lib::SEle::*;
+use super::{
+	List,
+	SEle,
+	Env,
+	ScmFn,
+	Procedure,
+	ProcOrFunc,
+	ScmAlert,
+	scheme_alert,
+	unit};
+use super::SEle::*;
 
+// TODO: instead of doing env.eval_expr, the direct use of the scm_* function can often be used
+// e.g. scm_define(env, list)
 // TODO: Make the arithmetic functions iterative rather than recursive. They are recursive to
 // imitate scheme, but it is probably not optimal for performance
 
@@ -80,18 +91,15 @@ fn scm_div(env: &mut Env, mut args: List) -> SEle {
 
 fn scm_remainder(env: &mut Env, mut args: List) -> SEle {
 	if args.len() != 2 {
-		scheme_alert(ScmAlert::ArityMiss("remainder", args.len(),"!=",2),
-			&env.error_mode);
-		unit()
+		scheme_alert(ScmAlert::ArityMiss("remainder", args.len(),"!=",2), &env.error_mode)
 	} else {
 		let e1 = env.elem_value(args.pop_head().unwrap());
 		let e2 = env.elem_value(args.pop_head().unwrap());
 		match (e1, e2) {
 			(SNum(n1), SNum(n2)) => SNum(n1 % n2),
 			(t1, t2) => {
-				scheme_alert(ScmAlert::WrongType("Number, Number",
-						format!("{}, {}", t1.variant(),
-							t2.variant()).as_slice()),
+				scheme_alert(ScmAlert::WrongType("Number, Number", format!("{}, {}",
+							t1.variant(), t2.variant()).as_slice()),
 					&env.error_mode);
 				unit()
 			}
@@ -99,24 +107,51 @@ fn scm_remainder(env: &mut Env, mut args: List) -> SEle {
 	}
 }
 
-fn scm_define(env: &mut Env, mut args: List) -> SEle {
+fn scm_lambda(env: &mut Env, mut args: List) -> SEle {
 	if args.len() < 2 {
-		scheme_alert(ScmAlert::ArityMiss("define", args.len(),"<",2),
-			&env.error_mode);
-		unit()
+		scheme_alert(ScmAlert::ArityMiss("lambda", args.len(),"<",2), &env.error_mode)
+	} else {
+		let wrapped_body = SExpr(List::with_body(SBinding("begin".to_string()),
+				args.pop_tail().unwrap()));
+		match args.pop_head().unwrap() {
+			SBinding(binding) => {
+				let procedure = Procedure::new_variadic(binding, wrapped_body);
+				SProc(box ProcOrFunc::Proc(procedure))
+			},
+			SExpr(lambda_bindings) => {
+				let lambda_arg_names = lambda_bindings.into_iter().map(|e|
+						if let SBinding(s) = e { s }
+						else { "".to_string() /* This is ugly :/ */ }
+					).collect();
+				let procedure = Procedure::new(lambda_arg_names, wrapped_body);
+				SProc(box ProcOrFunc::Proc(procedure))
+			},
+			_ => scheme_alert(ScmAlert::Bad("lambda body"), &env.error_mode),
+		}
+	}
+}
+
+pub fn scm_define(env: &mut Env, mut args: List) -> SEle {
+	if args.len() < 2 {
+		scheme_alert(ScmAlert::ArityMiss("define", args.len(),"<",2), &env.error_mode)
 	} else {
 		match args.pop_head().unwrap() {
-			SBinding(b) =>
+			SBinding(binding) =>
 				if args.len() != 1 {
 					scheme_alert(ScmAlert::ArityMiss("define",
 						args.len(),"<",2), &env.error_mode);
 				} else {
-					env.define_var(b, args.pop_head().unwrap());
+					env.define_var(binding, args.pop_head().unwrap());
 				},
-			SExpr(expr) => {
-				let wrapped = SExpr(List::with_body(
-					SBinding("begin".to_string()), args));
-				env.define_proc(SExpr(expr), wrapped);
+			SExpr(head) => {
+				// TODO: recursive definition of expression as var binding to lambda
+				let wrapped_body = SExpr(List::with_body(SBinding(
+							"begin".to_string()), args));
+				let (proc_name, arg_names) = env.dismantle_proc_head(head);
+				let procedure = box ProcOrFunc::Proc(Procedure::new(arg_names,
+						wrapped_body));
+				scm_define(env, List::with_body(SBinding(proc_name),
+						List::with_head(SProc(procedure))));
 			},
 			_ => {scheme_alert(ScmAlert::Bad("define body"), &env.error_mode);},
 		}
@@ -239,12 +274,6 @@ fn scm_var_stack(env: &mut Env, args: List) -> SEle {
 }
 
 #[allow(unused_variables)]
-fn scm_proc_stack(env: &mut Env, args: List) -> SEle {
-	println!("proc stack: {}", env.proc_defs);
-	unit()
-}
-
-#[allow(unused_variables)]
 fn scm_newline(env: &mut Env, args: List) -> SEle {
 	println!("");
 	unit()
@@ -258,8 +287,8 @@ pub fn standard_library() -> (Vec<(&'static str, ScmFn)>, Vec<(&'static str, SEl
 		("+", scm_add),
 		("-", scm_sub),
 		("/", scm_div),
-		("*", scm_mul),
 		("remainder", scm_remainder),
+		("lambda", scm_lambda),
 		("define", scm_define),
 		("display", scm_display),
 		("begin", scm_begin),
@@ -269,9 +298,7 @@ pub fn standard_library() -> (Vec<(&'static str, ScmFn)>, Vec<(&'static str, SEl
 		("cond", scm_cond),
 		("if", scm_if),
 		("var-stack", scm_var_stack),
-		("proc-stack", scm_proc_stack),
 		("newline", scm_newline),
-
 	];
 
 	let std_vars = vec![

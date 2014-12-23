@@ -10,6 +10,8 @@ use std::mem;
 
 use self::SEle::*;
 
+pub mod scheme_stdlib;
+
 pub enum ScmAlertMode {
 	Warn,
 	Error
@@ -206,26 +208,28 @@ impl List {
 	}
 
 	/// Pushes an element to the end of the list.
-	pub fn push(&mut self, ele: SEle) {
+	pub fn push(&mut self, ele: SEle) -> &mut List {
 		match self {
 			&List::Cons(_, box List::Nil) => {
 				let mut to_swap = List::with_head(ele);
 				self.swap_link(&mut to_swap).unwrap();
 			},
-			&List::Cons(_, box ref mut self_link) => self_link.push(ele),
+			&List::Cons(_, box ref mut self_link) => {self_link.push(ele);},
 			_ => {
 				let mut new_self = List::Cons(box ele, box List::Nil);
 				mem::swap(self, &mut new_self);
 			}
 		}
+		self
 	}
 
 	/// Inserts an element at the beginning of the list.
-	pub fn prepush(&mut self, ele: SEle) {
+	pub fn prepush(&mut self, ele: SEle) -> &mut List {
 		let mut local_self = List::Nil;
 		mem::swap(self, &mut local_self);
 		let mut new_self = List::Cons(box ele, box local_self);
 		mem::swap(self, &mut new_self);
+		self
 	}
 }
 
@@ -257,18 +261,6 @@ impl Index<uint, SEle> for List {
 	}
 }
 
-#[deriving(Clone, PartialEq)]
-pub struct Procedure {
-	arg_names: Vec<String>,
-	body: SEle
-}
-
-impl Procedure {
-	fn n_args(&self) -> uint {
-		self.arg_names.len()
-	}
-}
-
 /// An element in an S-Expression list
 #[deriving(Clone, PartialEq)]
 #[allow(dead_code)]
@@ -280,7 +272,7 @@ pub enum SEle {
 	SSymbol(String),
 	SBool(bool),
 	SList(List),
-	SProc(Box<Procedure>)
+	SProc(Box<ProcOrFunc>)
 }
 
 impl SEle {
@@ -307,7 +299,9 @@ impl fmt::Show for SEle {
 			SStr(ref s) => write!(f, "{}", s),
 			SSymbol(ref s) => write!(f, "'{}", s),
 			SBool(b) => write!(f, "{}", if b {"#t"} else {"#f"}),
-			SProc(ref p) => write!(f, "#procedure: arity={}", p.n_args())
+			SProc(box ProcOrFunc::Proc(ref p)) => write!(f, "#procedure: arity={}",
+				p.n_args()),
+			SProc(box ProcOrFunc::Func(_)) => write!(f, "#procedure")
 		}
 	}
 }
@@ -318,46 +312,45 @@ pub fn unit() -> SEle {
 	SList(List::Nil)
 }
 
+#[deriving(Clone, PartialEq)]
+pub struct Procedure {
+	arg_names: Vec<String>,
+	body: SEle,
+	variadic: bool
+}
+
+impl Procedure {
+	pub fn new(arg_names: Vec<String>, body: SEle) -> Procedure {
+		Procedure{arg_names: arg_names, body: body, variadic: false}
+	}
+
+	pub fn new_variadic(arg_name: String, body: SEle) -> Procedure {
+		Procedure{arg_names: vec![arg_name], body: body, variadic: true}
+	}
+
+	pub fn n_args(&self) -> uint {
+		self.arg_names.len()
+	}
+}
+
 // Either a scheme procedure, with argument names and body, or a rust function accepting an
 // environment and a list of arguments
 #[deriving(Clone)]
-enum ProcOrFunc {
+pub enum ProcOrFunc {
 	Proc(Procedure),
 	Func(ScmFn)
 }
 
-#[deriving(Clone)]
-pub struct ProcDef {
-	name: String,
-	procedure: ProcOrFunc,
-}
-
-impl fmt::Show for ProcDef {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		write!(f, "{}", self.name)
-	}
-}
-
-impl ProcDef {
-	pub fn new_proc(name: String, procedure: Procedure) -> ProcDef {
-		ProcDef{name: name, procedure: ProcOrFunc::Proc(procedure)}
-	}
-
-	pub fn new_func(name: String, func: ScmFn) -> ProcDef {
-		ProcDef{name: name, procedure: ProcOrFunc::Func(func)}
-	}
-}
-
-impl ProcDef {
-	fn name(&self) -> &str {
-		self.name.as_slice()
+impl PartialEq for ProcOrFunc {
+	fn eq(&self, other: &ProcOrFunc) -> bool {
+		match (self, other) {
+			(&ProcOrFunc::Proc(ref p1), &ProcOrFunc::Proc(ref p2)) => p1 == p2,
+			(_, _) => false
+		}
 	}
 }
 
 pub struct Env {
-	pub proc_defs: Vec<ProcDef>,
-	// Name/Key, Value
-	// TODO: change structure to similar to ProcDef. Better encapsulation and abstraction?
 	pub var_defs: Vec<(String, SEle)>,
 	// When the `error_mode` is set to `Warn`, all errors are reported as warnings.
 	// Useful when run in shell mode and stuff like undefined vars should not crash the session.
@@ -365,13 +358,12 @@ pub struct Env {
 }
 
 impl Env {
-	pub fn new_strict(proc_defs: Vec<ProcDef>, var_defs: Vec<(String, SEle)>) -> Env {
-		Env {proc_defs: proc_defs, var_defs: var_defs, error_mode: ScmAlertMode::Error }
+	pub fn new_strict(var_defs: Vec<(String, SEle)>) -> Env {
+		Env {var_defs: var_defs, error_mode: ScmAlertMode::Error }
 	}
 
-	#[allow(dead_code)]
-	pub fn new_lenient(proc_defs: Vec<ProcDef>, var_defs: Vec<(String, SEle)>) -> Env {
-		Env {proc_defs: proc_defs, var_defs: var_defs, error_mode: ScmAlertMode::Warn }
+	pub fn new_lenient(var_defs: Vec<(String, SEle)>) -> Env {
+		Env {var_defs: var_defs, error_mode: ScmAlertMode::Warn }
 	}
 
 	pub fn define_var(&mut self, binding: String, val: SEle) {
@@ -402,53 +394,26 @@ impl Env {
 		}
 	}
 
-	fn pop_proc_def(&mut self) -> ProcDef {
-		self.proc_defs.pop().expect("Failed to pop proc from stack")
-	}
-
-	fn pop_proc_defs(&mut self, n: uint) {
-		for _ in range(0, n) {
-			self.pop_proc_def();
-		}
-	}
-
-	// Get the closure, argument names, and expression body for a procedure
-	fn get_proc_def(&mut self, to_get: &str) -> Option<ProcDef> {
-		for proc_def in self.proc_defs.iter().rev() {
-			if proc_def.name() == to_get {
-				return Some(proc_def.clone());
-			} else {
-				continue;
-			}
-		}
-		None
-	}
-
 	// Extract the procedure name and argument names for the `define` header `head`
 	// TODO: use scheme_alert instead of panic
-	fn dismantle_proc_head(&mut self, head: SEle) -> (String, Vec<String>) {
-		if let SExpr(mut expr) = head {
-			if let Some(SBinding(procname)) = expr.pop_head() {
-				let var_names = expr.into_iter().map(|e|
-						if let SBinding(var_bnd) = e {
-							var_bnd
-						} else {
-							panic!("`{}` is not a binding name", e)
-						}
-					).collect();
-				(procname, var_names)
-			} else {
-				panic!("`{}` is not a valid procedure binding", expr)
-			}
+	pub fn dismantle_proc_head(&mut self, mut head: List) -> (String, Vec<String>) {
+		if let Some(SBinding(proc_name)) = head.pop_head() {
+			let var_names = head.into_iter().map(|e|
+					if let SBinding(var_bnd) = e {
+						var_bnd
+					} else {
+						panic!("`{}` is not a binding", e)
+					}
+				).collect();
+			(proc_name, var_names)
 		} else {
-			panic!("`{}` is not a valid procedure head", head)
+			panic!("`{}` is not a valid procedure binding", head)
 		}
 	}
 
-	pub fn define_proc(&mut self, head: SEle, body: SEle) {
-		let (proc_name, arg_names) = self.dismantle_proc_head(head);
-		let procedure = Procedure{arg_names: arg_names, body: body};
-		self.proc_defs.push(ProcDef::new_proc(proc_name, procedure))
+	pub fn define_proc(&mut self, proc_name: String, procedure: ProcOrFunc) {
+		scheme_stdlib::scm_define(self, List::with_body(SBinding(proc_name),
+				List::with_head(SProc(box procedure))));
 	}
 
 	// TODO: Fix to work with empty lists by remedying the `unwrap`
@@ -456,16 +421,11 @@ impl Env {
 	/// Evaluate the Scheme expression, assuming `expr` is a list of the
 	/// expression body starting with a procedure binding
 	fn eval_expr(&mut self, mut expr: List) -> SEle {
-		match expr.pop_head().unwrap() {
-			SBinding(s) => {
-				let ele = self.call_proc(s.as_slice(), expr);
-				if let SExpr(inner_expr) = ele {
-					self.eval_expr(inner_expr)
-				} else {
-					ele
-				}
-			},
-			x => panic!("`{}` is not a procedure", x)
+		match self.elem_value(expr.pop_head().unwrap()) {
+			SProc(box ProcOrFunc::Proc(procedure)) => self.run_proc(procedure, expr),
+			SProc(box ProcOrFunc::Func(func)) => func(self, expr),
+			x => scheme_alert(ScmAlert::WrongType("Procedure", x.variant()),
+				&self.error_mode)
 		}
 	}
 
@@ -496,14 +456,10 @@ impl Env {
 	// `begin`. Only in these situations can variables and procedures be `define`d, wherefore
 	// this method keeps track of variables and procedures in scope.
 	pub fn eval_block(&mut self, exprs: List) -> SEle {
-		let (previous_vars, previous_fns) = (self.var_defs.len(), self.proc_defs.len());
-
+		let previous_n_vars = self.var_defs.len();
 		let result = self.eval_sequence(exprs);
-
-		let (current_vars, current_fns) = (self.var_defs.len(), self.proc_defs.len());
-		self.pop_var_defs(current_vars - previous_vars);
-		self.pop_proc_defs(current_fns - previous_fns);
-
+		let current_n_vars = self.var_defs.len();
+		self.pop_var_defs(current_n_vars - previous_n_vars);
 		result
 	}
 
@@ -522,31 +478,26 @@ impl Env {
 		}
 	}
 
-	fn call_proc(&mut self, proc_name: &str, args: List) -> SEle {
-		if let Some(proc_def) = self.get_proc_def(proc_name)  {
-			match proc_def.procedure {
-				ProcOrFunc::Proc(procedure) => {
-					let evaled_args = self.eval_multiple(args);
-					let n_args = procedure.n_args();
-					if n_args != evaled_args.len() {
-						return scheme_alert(ScmAlert::ArityMiss(proc_name,
-							n_args,"!=",evaled_args.len()),
-							&self.error_mode)
-					}
-					// Bind and push supplied args to environment
-					for (var_name, var_val) in procedure.arg_names.clone()
-						.into_iter().zip(evaled_args.into_iter())
-					{
-						self.define_var(var_name, var_val);
-					}
-					let result = self.elem_value(procedure.body.clone());
-					self.pop_var_defs(n_args);
-					result
-				},
-				ProcOrFunc::Func(func) => func(self, args)
-			}
+	fn run_proc(&mut self, mut procedure: Procedure, args: List) -> SEle {
+		let evaled_args = self.eval_multiple(args);
+		let n_args = procedure.n_args();
+		if procedure.variadic {
+			self.define_var(procedure.arg_names.pop().unwrap(), SList(evaled_args));
 		} else {
-			scheme_alert(ScmAlert::Undef(proc_name), &self.error_mode)
+			if n_args != evaled_args.len() {
+				return scheme_alert(ScmAlert::ArityMiss("_",
+					n_args,"!=",evaled_args.len()),
+					&self.error_mode)
+			}
+			// Bind and push supplied args to environment
+			for (var_name, var_val) in procedure.arg_names.clone()
+				.into_iter().zip(evaled_args.into_iter())
+			{
+				self.define_var(var_name, var_val);
+			}
 		}
+		let result = self.elem_value(procedure.body.clone());
+		self.pop_var_defs(n_args);
+		result
 	}
 }
