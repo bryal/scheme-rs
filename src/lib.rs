@@ -3,6 +3,8 @@
 #![feature(globs)]
 #![feature(unboxed_closures)]
 
+// TODO: Consider making more use of pass-by-reference rather than cloning everywhere
+
 use std::fmt;
 use std::mem;
 
@@ -32,9 +34,10 @@ pub enum ScmAlert<'a> {
 	Undef(&'a str),
 	NaN(SEle),
 	Unclosed,
+	Custom(String)
 }
 
-pub fn scheme_alert(alert: ScmAlert, a_type: &ScmAlertMode) {
+pub fn scheme_alert(alert: ScmAlert, a_type: &ScmAlertMode) -> SEle {
 	match alert {
 		ScmAlert::Unexp(s) => println!("; {}: Unexpected `{}`", a_type, s),
 		ScmAlert::WrongType(exp, got) => println!("; {}: Wrong type. Expected `{}`, found `{}`",
@@ -45,10 +48,12 @@ pub fn scheme_alert(alert: ScmAlert, a_type: &ScmAlertMode) {
 		ScmAlert::Unclosed => println!("; {}: Unclosed delimiter", a_type),
 		ScmAlert::ArityMiss(s, got, vs, exp) => println!("; {}: Arity missmatch in `{}`, {} {} {}",
 				a_type, s, got, vs, exp),
+		ScmAlert::Custom(s) => println!("; {}: {}", a_type, s),
 	}
 	if let &ScmAlertMode::Error = a_type {
 		panic!()
 	}
+	unit()
 }
 
 pub struct MoveListItems {
@@ -252,6 +257,18 @@ impl Index<uint, SEle> for List {
 	}
 }
 
+#[deriving(Clone, PartialEq)]
+pub struct Procedure {
+	arg_names: Vec<String>,
+	body: SEle
+}
+
+impl Procedure {
+	fn n_args(&self) -> uint {
+		self.arg_names.len()
+	}
+}
+
 /// An element in an S-Expression list
 #[deriving(Clone, PartialEq)]
 #[allow(dead_code)]
@@ -262,8 +279,8 @@ pub enum SEle {
 	SStr(String),
 	SSymbol(String),
 	SBool(bool),
-	SList(List)
-	// TODO: Add procedure type. This is what lambda will return
+	SList(List),
+	SProc(Box<Procedure>)
 }
 
 impl SEle {
@@ -275,7 +292,8 @@ impl SEle {
 			&SStr(_) => "String",
 			&SSymbol(_) => "Symbol",
 			&SBool(_) => "Bool",
-			&SList(_) => "List"
+			&SList(_) => "List",
+			&SProc(_) => "Procedure"
 		}
 	}
 }
@@ -289,56 +307,75 @@ impl fmt::Show for SEle {
 			SStr(ref s) => write!(f, "{}", s),
 			SSymbol(ref s) => write!(f, "'{}", s),
 			SBool(b) => write!(f, "{}", if b {"#t"} else {"#f"}),
+			SProc(ref p) => write!(f, "#procedure: arity={}", p.n_args())
 		}
 	}
 }
+
+pub type ScmFn = fn(&mut Env, List) -> SEle;
 
 pub fn unit() -> SEle {
 	SList(List::Nil)
 }
 
-// Arguments: Environment, Argument names, Argument values, Body to evaluate
-pub type ScmFn<'a> = Fn(&mut Env, List) -> SEle + 'a;
-
-// TODO: Make use of unboxed closures instead of passing around `arg_names` and `body`
-pub struct ProcDef<'a> {
-	name: String,
-	closure: Box<ScmFn<'a>>,
+// Either a scheme procedure, with argument names and body, or a rust function accepting an
+// environment and a list of arguments
+#[deriving(Clone)]
+enum ProcOrFunc {
+	Proc(Procedure),
+	Func(ScmFn)
 }
 
-impl<'a> fmt::Show for ProcDef<'a> {
+#[deriving(Clone)]
+pub struct ProcDef {
+	name: String,
+	procedure: ProcOrFunc,
+}
+
+impl fmt::Show for ProcDef {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "{}", self.name)
 	}
 }
 
-impl<'a> ProcDef<'a> {
-	pub fn new(name: String, cls: Box<ScmFn<'a>>) -> ProcDef<'a> {
-		ProcDef{name: name, closure: cls}
+impl ProcDef {
+	pub fn new_proc(name: String, procedure: Procedure) -> ProcDef {
+		ProcDef{name: name, procedure: ProcOrFunc::Proc(procedure)}
+	}
+
+	pub fn new_func(name: String, func: ScmFn) -> ProcDef {
+		ProcDef{name: name, procedure: ProcOrFunc::Func(func)}
 	}
 }
 
-pub struct Env<'a> {
-	// Name, Argument names, Closure
-	pub fn_defs: Vec<ProcDef<'a>>,
-	// Name, Value
+impl ProcDef {
+	fn name(&self) -> &str {
+		self.name.as_slice()
+	}
+}
+
+pub struct Env {
+	pub proc_defs: Vec<ProcDef>,
+	// Name/Key, Value
+	// TODO: change structure to similar to ProcDef. Better encapsulation and abstraction?
 	pub var_defs: Vec<(String, SEle)>,
 	// When the `error_mode` is set to `Warn`, all errors are reported as warnings.
 	// Useful when run in shell mode and stuff like undefined vars should not crash the session.
 	pub error_mode: ScmAlertMode
 }
 
-impl<'a> Env<'a> {
-	pub fn new_strict(fn_defs: Vec<ProcDef<'a>>, var_defs: Vec<(String, SEle)>) -> Env<'a> {
-		Env {fn_defs: fn_defs, var_defs: var_defs, error_mode: ScmAlertMode::Error }
+impl Env {
+	pub fn new_strict(proc_defs: Vec<ProcDef>, var_defs: Vec<(String, SEle)>) -> Env {
+		Env {proc_defs: proc_defs, var_defs: var_defs, error_mode: ScmAlertMode::Error }
 	}
 
 	#[allow(dead_code)]
-	pub fn new_lenient(fn_defs: Vec<ProcDef<'a>>, var_defs: Vec<(String, SEle)>) -> Env<'a> {
-		Env {fn_defs: fn_defs, var_defs: var_defs, error_mode: ScmAlertMode::Warn }
+	pub fn new_lenient(proc_defs: Vec<ProcDef>, var_defs: Vec<(String, SEle)>) -> Env {
+		Env {proc_defs: proc_defs, var_defs: var_defs, error_mode: ScmAlertMode::Warn }
 	}
 
 	pub fn define_var(&mut self, binding: String, val: SEle) {
+		// TODO: Maybe adopt a more lazy evaluation stratergy?
 		let val = self.elem_value(val);
 		self.var_defs.push((binding, val));
 	}
@@ -352,16 +389,11 @@ impl<'a> Env<'a> {
 				continue;
 			}
 		}
-		scheme_alert(ScmAlert::Undef(to_get), &self.error_mode);
-		unit()
+		scheme_alert(ScmAlert::Undef(to_get), &self.error_mode)
 	}
 
 	fn pop_var_def(&mut self) -> (String, SEle) {
-		if let Some(var) = self.var_defs.pop() {
-			var
-		} else {
-			panic!("Could not pop variable definition")
-		}
+		self.var_defs.pop().expect("Failed to pop var from stack")
 	}
 
 	fn pop_var_defs(&mut self, n: uint) {
@@ -371,11 +403,7 @@ impl<'a> Env<'a> {
 	}
 
 	fn pop_proc_def(&mut self) -> ProcDef {
-		if let Some(f) = self.fn_defs.pop() {
-			f
-		} else {
-			panic!("Could not pop fn definition")
-		}
+		self.proc_defs.pop().expect("Failed to pop proc from stack")
 	}
 
 	fn pop_proc_defs(&mut self, n: uint) {
@@ -385,21 +413,22 @@ impl<'a> Env<'a> {
 	}
 
 	// Get the closure, argument names, and expression body for a procedure
-	fn get_proc(&mut self, f_name: &str) -> &'a mut ProcDef {
-		for fndef in self.fn_defs.iter_mut().rev() {
-			if fndef.name.as_slice() == f_name {
-				return fndef;
+	fn get_proc_def(&mut self, to_get: &str) -> Option<ProcDef> {
+		for proc_def in self.proc_defs.iter().rev() {
+			if proc_def.name() == to_get {
+				return Some(proc_def.clone());
 			} else {
 				continue;
 			}
 		}
-		panic!("Procedure `{}` is not defined", f_name)
+		None
 	}
 
 	// Extract the procedure name and argument names for the `define` header `head`
+	// TODO: use scheme_alert instead of panic
 	fn dismantle_proc_head(&mut self, head: SEle) -> (String, Vec<String>) {
 		if let SExpr(mut expr) = head {
-			if let SBinding(fn_bnd) = expr.pop_head().unwrap() {
+			if let Some(SBinding(procname)) = expr.pop_head() {
 				let var_names = expr.into_iter().map(|e|
 						if let SBinding(var_bnd) = e {
 							var_bnd
@@ -407,7 +436,7 @@ impl<'a> Env<'a> {
 							panic!("`{}` is not a binding name", e)
 						}
 					).collect();
-				(fn_bnd, var_names)
+				(procname, var_names)
 			} else {
 				panic!("`{}` is not a valid procedure binding", expr)
 			}
@@ -417,26 +446,9 @@ impl<'a> Env<'a> {
 	}
 
 	pub fn define_proc(&mut self, head: SEle, body: SEle) {
-		let (fn_binding, arg_names) = self.dismantle_proc_head(head);
-
-		let defined_f = box move |&: env: &mut Env, args: List| {
-			let evaled_args = env.eval_args(args);
-			let n_args = arg_names.len();
-			if n_args != evaled_args.len() {
-				scheme_alert(ScmAlert::ArityMiss("_", n_args,"!=",evaled_args.len()),
-					&env.error_mode);
-				return unit();
-			}
-			// Bind and push supplied args to environment
-			for (k, v) in arg_names.clone().into_iter().zip(evaled_args.into_iter()) {
-				env.define_var(k, v);
-			}
-			let result = env.elem_value(body.clone());
-			env.pop_var_defs(n_args);
-			result
-		};
-
-		self.fn_defs.push(ProcDef::new(fn_binding, defined_f))
+		let (proc_name, arg_names) = self.dismantle_proc_head(head);
+		let procedure = Procedure{arg_names: arg_names, body: body};
+		self.proc_defs.push(ProcDef::new_proc(proc_name, procedure))
 	}
 
 	// TODO: Fix to work with empty lists by remedying the `unwrap`
@@ -446,7 +458,7 @@ impl<'a> Env<'a> {
 	fn eval_expr(&mut self, mut expr: List) -> SEle {
 		match expr.pop_head().unwrap() {
 			SBinding(s) => {
-				let ele = call_proc(self, s.as_slice(), expr);
+				let ele = self.call_proc(s.as_slice(), expr);
 				if let SExpr(inner_expr) = ele {
 					self.eval_expr(inner_expr)
 				} else {
@@ -467,7 +479,7 @@ impl<'a> Env<'a> {
 		}
 	}
 
-	pub fn eval_multiple(&mut self, exprs: List) -> SEle {	
+	pub fn eval_sequence(&mut self, exprs: List) -> SEle {	
 		if exprs != List::Nil {
 			let mut it = exprs.into_iter();
 			while let Some(expr) = it.next() {
@@ -484,18 +496,18 @@ impl<'a> Env<'a> {
 	// `begin`. Only in these situations can variables and procedures be `define`d, wherefore
 	// this method keeps track of variables and procedures in scope.
 	pub fn eval_block(&mut self, exprs: List) -> SEle {
-		let (previous_vars, previous_fns) = (self.var_defs.len(), self.fn_defs.len());
+		let (previous_vars, previous_fns) = (self.var_defs.len(), self.proc_defs.len());
 
-		let result = self.eval_multiple(exprs);
+		let result = self.eval_sequence(exprs);
 
-		let (current_vars, current_fns) = (self.var_defs.len(), self.fn_defs.len());
+		let (current_vars, current_fns) = (self.var_defs.len(), self.proc_defs.len());
 		self.pop_var_defs(current_vars - previous_vars);
 		self.pop_proc_defs(current_fns - previous_fns);
 
 		result
 	}
 
-	fn eval_args(&mut self, exprs: List) -> List {
+	fn eval_multiple(&mut self, exprs: List) -> List {
 		exprs.into_iter().map(|e| self.elem_value(e)).collect()
 	}
 
@@ -509,10 +521,32 @@ impl<'a> Env<'a> {
 			_ => false
 		}
 	}
-}
 
-fn call_proc(env: *mut Env, f_name: &str, args: List) -> SEle {
-	let env_brw: &mut Env = unsafe{mem::transmute(&mut *env)};
-	let fndef = env_brw.get_proc(f_name);
-	(*fndef.closure).call((unsafe{mem::transmute(&mut *env)}, args))
+	fn call_proc(&mut self, proc_name: &str, args: List) -> SEle {
+		if let Some(proc_def) = self.get_proc_def(proc_name)  {
+			match proc_def.procedure {
+				ProcOrFunc::Proc(procedure) => {
+					let evaled_args = self.eval_multiple(args);
+					let n_args = procedure.n_args();
+					if n_args != evaled_args.len() {
+						return scheme_alert(ScmAlert::ArityMiss(proc_name,
+							n_args,"!=",evaled_args.len()),
+							&self.error_mode)
+					}
+					// Bind and push supplied args to environment
+					for (var_name, var_val) in procedure.arg_names.clone()
+						.into_iter().zip(evaled_args.into_iter())
+					{
+						self.define_var(var_name, var_val);
+					}
+					let result = self.elem_value(procedure.body.clone());
+					self.pop_var_defs(n_args);
+					result
+				},
+				ProcOrFunc::Func(func) => func(self, args)
+			}
+		} else {
+			scheme_alert(ScmAlert::Undef(proc_name), &self.error_mode)
+		}
+	}
 }

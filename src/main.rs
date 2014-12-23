@@ -63,7 +63,7 @@ fn interactive_shell(env: &mut Env) {
 				{
 					let strs: Vec<&str> = token_buf.iter().map(|s| s.as_slice())
 						.collect();
-					print!("{}\n>> ", env.eval_multiple(parse_expressions(
+					print!("{}\n>> ", env.eval_sequence(parse_expressions(
 								strs.as_slice())));
 				}
 				token_buf.clear();
@@ -74,14 +74,14 @@ fn interactive_shell(env: &mut Env) {
 }
 
 fn main(){
-	let (std_procs, std_vars) = scheme_stdlib::standard_environment();
+	let (std_procs, std_vars) = scheme_stdlib::standard_library();
 	let mut procs = Vec::with_capacity(std_procs.len());
 	let mut vars = Vec::with_capacity(std_vars.len());
-	for (name, cls) in std_procs.into_iter() {
-		procs.push(ProcDef::new(name.to_string(), cls));
+	for (name, func) in std_procs.into_iter() {
+		procs.push(ProcDef::new_func(name.to_string(), func));
 	}
-	for (k, v) in std_vars.into_iter() {
-		vars.push((k.to_string(), v));
+	for (name, val) in std_vars.into_iter() {
+		vars.push((name.to_string(), val));
 	}
 	let mut env = Env::new_strict(procs, vars);
 
