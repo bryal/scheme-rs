@@ -4,6 +4,7 @@
 #![feature(unboxed_closures)]
 
 // TODO: Consider making more use of pass-by-reference rather than cloning everywhere
+// TODO: Lazy evaluation is just troublesome to implement. Make everything less lazy.
 
 use std::fmt;
 use std::mem;
@@ -11,13 +12,6 @@ use std::mem;
 use self::SEle::*;
 
 pub mod scheme_stdlib;
-
-/// For tail call optimization. If a procedure calls has itself as tail, return the arguments to
-/// call self with,
-// pub enum Thunk {
-// 	Args(Vec<SEle>),
-// 	Result()
-// }
 
 pub enum ScmAlertMode {
 	Warn,
@@ -279,7 +273,7 @@ pub enum SEle {
 	SSymbol(String),
 	SBool(bool),
 	SList(List),
-	SProc(Box<LamOrFn>)
+	SProc(Box<ProcOrFunc>)
 }
 
 impl SEle {
@@ -306,9 +300,9 @@ impl fmt::Show for SEle {
 			SStr(ref s) => write!(f, "{}", s),
 			SSymbol(ref s) => write!(f, "'{}", s),
 			SBool(b) => write!(f, "{}", if b {"#t"} else {"#f"}),
-			SProc(box LamOrFn::Lam(ref p)) => write!(f, "#procedure: arity={}, body={}",
+			SProc(box ProcOrFunc::Proc(ref p)) => write!(f, "#procedure: arity={}\n{}",
 				p.n_args(), p.body),
-			SProc(box LamOrFn::Fn(_)) => write!(f, "#procedure")
+			SProc(box ProcOrFunc::Func(_)) => write!(f, "#procedure")
 		}
 	}
 }
@@ -320,19 +314,21 @@ pub fn unit() -> SEle {
 }
 
 #[deriving(Clone, PartialEq)]
-pub struct Lambda {
+pub struct Procedure {
 	arg_names: Vec<String>,
+	// TODO: Store body as a reference or something. Current way requires lots of cloning
+	// potentially huge expressions.
 	body: SEle,
 	variadic: bool
 }
 
-impl Lambda {
-	pub fn new(arg_names: Vec<String>, body: SEle) -> Lambda {
-		Lambda{arg_names: arg_names, body: body, variadic: false}
+impl Procedure {
+	pub fn new(arg_names: Vec<String>, body: SEle) -> Procedure {
+		Procedure{arg_names: arg_names, body: body, variadic: false}
 	}
 
-	pub fn new_variadic(arg_name: String, body: SEle) -> Lambda {
-		Lambda{arg_names: vec![arg_name], body: body, variadic: true}
+	pub fn new_variadic(arg_name: String, body: SEle) -> Procedure {
+		Procedure{arg_names: vec![arg_name], body: body, variadic: true}
 	}
 
 	pub fn n_args(&self) -> uint {
@@ -343,15 +339,15 @@ impl Lambda {
 // Either a scheme procedure, with argument names and body, or a rust function accepting an
 // environment and a list of arguments
 #[deriving(Clone)]
-pub enum LamOrFn {
-	Lam(Lambda),
-	Fn(&'static ScmFn)
+pub enum ProcOrFunc {
+	Proc(Procedure),
+	Func(ScmFn)
 }
 
-impl PartialEq for LamOrFn {
-	fn eq(&self, other: &LamOrFn) -> bool {
+impl PartialEq for ProcOrFunc {
+	fn eq(&self, other: &ProcOrFunc) -> bool {
 		match (self, other) {
-			(&LamOrFn::Lam(ref p1), &LamOrFn::Lam(ref p2)) => p1 == p2,
+			(&ProcOrFunc::Proc(ref p1), &ProcOrFunc::Proc(ref p2)) => p1 == p2,
 			(_, _) => false
 		}
 	}
@@ -365,21 +361,15 @@ pub struct Env {
 }
 
 impl Env {
-	pub fn new(var_defs: Vec<(String, SEle)>) -> Env {
+	pub fn new_strict(var_defs: Vec<(String, SEle)>) -> Env {
 		Env {var_defs: var_defs, error_mode: ScmAlertMode::Error }
 	}
 
-	pub fn make_strict(&mut self) {
-		self.error_mode = ScmAlertMode::Error
-	}
-
-	pub fn make_lenient(&mut self) {
-		self.error_mode = ScmAlertMode::Warn
+	pub fn new_lenient(var_defs: Vec<(String, SEle)>) -> Env {
+		Env {var_defs: var_defs, error_mode: ScmAlertMode::Warn }
 	}
 
 	pub fn define_var(&mut self, binding: String, val: SEle) {
-		// TODO: Maybe adopt a more lazy evaluation stratergy?
-		let val = self.eval(val);
 		self.var_defs.push((binding, val));
 	}
 
@@ -422,36 +412,71 @@ impl Env {
 		}
 	}
 
-	pub fn define_proc(&mut self, proc_name: String, procedure: LamOrFn) {
+	pub fn define_proc(&mut self, proc_name: String, procedure: ProcOrFunc) {
 		scheme_stdlib::scm_define(self, List::with_body(SBinding(proc_name),
 				List::with_head(SProc(box procedure))));
 	}
 
 	// TODO: Fix to work with empty lists by remedying the `unwrap`
-	// TODO: Fix to work with procedures as first element, like the result of a lambda
-	/// Evaluate the Scheme expression, assuming `expr` is a list of the
+	/// Absolutely evaluate the Scheme expression, assuming `expr` is a list of the
 	/// expression body starting with a procedure binding
-	fn eval_expr(&mut self, mut expr: List) -> SEle {
-		match self.eval(expr.pop_head().unwrap()) {
-			SProc(box LamOrFn::Lam(procedure)) => self.run_proc(procedure, expr),
-			SProc(box LamOrFn::Fn(func)) => (*func)(self, expr),
-			x => scheme_alert(ScmAlert::WrongType("Procedure", x.variant()),
-				&self.error_mode)
+	// fn eval_expr(&mut self, mut expr: List) -> SEle {
+	// 	let bound_procedure_expression = self.bound_elem(expr.pop_head().unwrap());
+	// 	match self.eval(bound_procedure_expression) {
+	// 		SProc(box ProcOrFunc::Proc(procedure)) => self.run_proc(procedure, expr),
+	// 		SProc(box ProcOrFunc::Func(func)) => func(self, expr),
+	// 		x => scheme_alert(ScmAlert::WrongType("Procedure", x.variant()),
+	// 			&self.error_mode)
+	// 	}	
+	// }
+
+	fn eval_expr_lazy(&mut self, mut expr: List) -> (SEle, uint) {
+		let bound_procedure_expression = self.bound_elem(expr.pop_head().unwrap());
+		match self.eval(bound_procedure_expression) {
+			SProc(box ProcOrFunc::Proc(procedure)) => self.run_proc(procedure, expr),
+			SProc(box ProcOrFunc::Func(func)) => (func(self, expr), 0),
+			x => (scheme_alert(ScmAlert::WrongType("Procedure", x.variant()),
+				&self.error_mode), 0)
+		}	
+	}
+
+	// Get the associated expression if the element is a binding.
+	pub fn bound_elem(&mut self, ele: SEle) -> SEle {
+		match ele {
+			SBinding(x) => self.get_var(x.as_slice()),
+			_ => ele
 		}
 	}
 
-	// Get the value of the element. If it's an expression, get the evaluation. If it's a
-	// binding, get the associated value. If it's a value, return it.
+	// Absolutely evaluate the element. Return value is guaranteed to not be an expression.
 	pub fn eval(&mut self, ele: SEle) -> SEle {
+		let ele = self.bound_elem(ele);
 		match ele {
-			SExpr(x) => self.eval_expr(x),
-			SBinding(x) => {
-				let bound_ele = self.get_var(x.as_slice());
-				self.eval(bound_ele)
+			SExpr(_) => {
+				let mut evaluating = ele;
+				let mut stack_size = 0;
+				loop {
+					match evaluating {
+						SExpr(expr) => {
+							let (new_evaluating, new_on_stack) =
+								self.eval_expr_lazy(expr);
+							evaluating = new_evaluating;
+							stack_size += new_on_stack;
+						},
+						SBinding(_) => evaluating = self.bound_elem(evaluating),
+						_ => break
+					}
+				}
+				println!("{}", stack_size);
+				self.pop_var_defs(stack_size);
+				evaluating
 			},
 			_ => ele
 		}
 	}
+
+	// If `ele` is a composite expression, only eval the outermost expression. Return value
+	// might be another expression.
 
 	pub fn eval_sequence(&mut self, exprs: List) -> SEle {	
 		if exprs != List::Nil {
@@ -482,6 +507,7 @@ impl Env {
 	}
 
 	pub fn elem_is_true(&mut self, ele: SEle) -> bool {
+		let ele = self.bound_elem(ele);
 		match ele {
 			SBool(b) => b,
 			SExpr(_) => {
@@ -492,16 +518,18 @@ impl Env {
 		}
 	}
 
-	fn run_proc(&mut self, mut procedure: Lambda, args: List) -> SEle {
+	// TODO: gotta get some heap allocation or a trampoline for the recursion to fix the stack
+	// overflows
+	fn run_proc(&mut self, mut procedure: Procedure, args: List) -> (SEle, uint) {
 		let evaled_args = self.eval_multiple(args);
 		let n_args = procedure.n_args();
 		if procedure.variadic {
 			self.define_var(procedure.arg_names.pop().unwrap(), SList(evaled_args));
 		} else {
 			if n_args != evaled_args.len() {
-				return scheme_alert(ScmAlert::ArityMiss("_",
+				return (scheme_alert(ScmAlert::ArityMiss("_",
 					n_args,"!=",evaled_args.len()),
-					&self.error_mode)
+					&self.error_mode), 0)
 			}
 			// Bind and push supplied args to environment
 			for (var_name, var_val) in procedure.arg_names.clone()
@@ -510,8 +538,30 @@ impl Env {
 				self.define_var(var_name, var_val);
 			}
 		}
-		let result = self.eval(procedure.body.clone());
-		self.pop_var_defs(n_args);
-		result
+		(procedure.body.clone(), n_args)
+	}
+}
+
+// Get all bindings in the expression that are not in `bound_vars`
+// Some of the standard procedures are special in the way that they take their arguments.
+fn get_unbound_vars(bound_vars: &Vec<String>, ele: SEle, acc: &mut Vec<String>) {
+	if let SExpr(mut expr) = ele {
+		match expr.pop_head().unwrap() { // TODO: not unwrap
+			SBinding(ref b) if b == &"define" || b == &"lambda" => {
+				for e in expr.pop_tail().unwrap().into_iter() {
+					get_unbound_vars(bound_vars, e, acc);
+				}
+			},
+			SProc(_) | SBinding(_) => {
+				for e in expr.into_iter() {
+					get_unbound_vars(bound_vars, e, acc);
+				}
+			},
+			_ => ()
+		}
+	} else if let SBinding(b) = ele {
+		if !bound_vars.as_slice().contains(&b) && !acc.as_slice().contains(&b) {
+			acc.push(b);
+		}
 	}
 }

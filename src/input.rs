@@ -8,6 +8,11 @@ fn print_usage(program: &str, opts: &[OptGroup]) {
 	println!("{}", usage);
 }
 
+pub fn read_stdlib() -> String {
+	let file_bytes = File::open(&Path::new("stdlib.scmrs")).read_to_end().unwrap();
+	String::from_utf8(file_bytes).unwrap()
+}
+
 /// Get source code to parse and execute from commandline, file, or if no text supplied:
 /// return `None` to signal for interactive shell
 pub fn get_input() -> Option<String> {

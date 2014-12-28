@@ -102,7 +102,7 @@ fn parse_binding(s: &str) -> Option<String> {
 }
 
 fn parse_number(s: &str) -> Option<f64> {
-	from_str(s)
+	s.parse()
 }
 
 fn parse_str_literal(s: &str) -> Option<&str> {

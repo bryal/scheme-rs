@@ -6,7 +6,7 @@ use std::io;
 
 use lib::{
 	Env,
-	ProcOrFunc,
+	LamOrFn,
 	ScmAlert,
 	ScmAlertMode,
 	scheme_alert,
@@ -16,7 +16,7 @@ use parse::{
 	split_source_text,
 	parse_expressions};
 
-mod cmdline;
+mod input;
 mod lib;
 mod parse;
 
@@ -75,27 +75,31 @@ fn interactive_shell(env: &mut Env) {
 }
 
 fn main(){
-	let (std_procs, std_vars) = scheme_stdlib::standard_library();
-	let mut vars = Vec::with_capacity(std_vars.len());
-	for (name, val) in std_vars.into_iter() {
+	let (internal_std_procs, internal_std_vars) = scheme_stdlib::standard_library();
+	let mut vars = Vec::with_capacity(internal_std_vars.len());
+	for (name, val) in internal_std_vars.into_iter() {
 		vars.push((name.to_string(), val));
 	}
-	for (name, func) in std_procs.into_iter() {
-		vars.push((name.to_string(), SProc(box ProcOrFunc::Func(func))));
+	for (name, func) in internal_std_procs.into_iter() {
+		vars.push((name.to_string(), SProc(box LamOrFn::Fn(func))));
 	}
 
-	let maybe_input = cmdline::get_input();
-	if let Some(input) = maybe_input {
+	let mut env = Env::new(vars);
+
+	let stdlib_src = input::read_stdlib();
+	let parsed = parse_expressions(split_source_text(stdlib_src.as_slice()).as_slice());
+	env.eval_sequence(parsed);
+
+	if let Some(input) = input::get_input() {
 		let begin_wrapped = format!("(begin {})", input);
 		let mut parsed = parse_expressions(split_source_text(begin_wrapped.as_slice())
 				.as_slice());
 		if parsed.len() != 1 {
 			panic!("Parsed source is invalid")
 		}
-		let mut env = Env::new_strict(vars);
-		env.elem_value(parsed.pop_head().unwrap());
+		env.eval(parsed.pop_head().unwrap());
 	} else {
-		let mut env = Env::new_lenient(vars);
+		env.make_lenient();
 		interactive_shell(&mut env);
 	}
 }
