@@ -5,13 +5,14 @@ extern crate getopts;
 use std::io;
 
 use lib::{
+	SEle,
 	Env,
 	LamOrFn,
 	ScmAlert,
 	ScmAlertMode,
 	scheme_alert,
 	scheme_stdlib};
-use lib::SEle::SProc;
+use lib::macro::PrecompileEnv;
 use parse::{
 	split_source_text,
 	parse_expressions};
@@ -37,7 +38,7 @@ fn right_paren_surplus(v: &[&str]) -> i32 {
 	r_surplus
 }
 
-fn interactive_shell(env: &mut Env) {
+fn interactive_shell(env: &mut Env, macro_env: &mut PrecompileEnv) {
 	print!("scheme-rs interactive shell. Copyright (C) 2014  Johan Johansson\n\
 		This program is free software released under the GPLv3 license.\n\n\
 		>> ");
@@ -48,28 +49,25 @@ fn interactive_shell(env: &mut Env) {
 		let line = line.unwrap();
 		let splitted = split_source_text(line.as_slice().clone());
 		rparen_surplus += right_paren_surplus(splitted.as_slice());
-		match rparen_surplus {
-			n if rparen_surplus < 0 => {
-				token_buf.push_all(to_strings(splitted.as_slice()).as_slice());
-				print!("\n>> {}", String::from_char((n * -2) as uint, ' '))
-			},
-			_ if rparen_surplus > 0 => {
-				scheme_alert(ScmAlert::Unexp(")"), &ScmAlertMode::Warn);
-				token_buf.clear();
-				rparen_surplus = 0;
-				print!(">> ");
-			},
-			_ => {
-				token_buf.push_all(to_strings(splitted.as_slice()).as_slice());
-				{
-					let strs: Vec<&str> = token_buf.iter().map(|s| s.as_slice())
-						.collect();
-					print!("{}\n>> ", env.eval_sequence(parse_expressions(
-								strs.as_slice())));
-				}
-				token_buf.clear();
-				rparen_surplus = 0;
+		if rparen_surplus < 0 {
+			token_buf.push_all(to_strings(splitted.as_slice()).as_slice());
+			print!(">> {}", String::from_char((rparen_surplus * -2) as uint, ' '))
+		} else if rparen_surplus > 0 {
+			scheme_alert(ScmAlert::Unexp(")"), &ScmAlertMode::Warn);
+			token_buf.clear();
+			rparen_surplus = 0;
+			print!(">> ");
+		} else {
+			token_buf.push_all(to_strings(splitted.as_slice()).as_slice());
+			{
+				let strs: Vec<&str> = token_buf.iter().map(|s| s.as_slice())
+					.collect();
+				let parsed_and_expanded = parse_expressions(strs.as_slice())
+					.into_iter().map(|e| macro_env.expand(e)).collect();
+				print!("{}\n>> ", env.eval_sequence(parsed_and_expanded));
 			}
+			token_buf.clear();
+			rparen_surplus = 0;
 		}
 	}
 }
@@ -81,14 +79,15 @@ fn main(){
 		vars.push((name.to_string(), val));
 	}
 	for (name, func) in internal_std_procs.into_iter() {
-		vars.push((name.to_string(), SProc(box LamOrFn::Fn(func))));
+		vars.push((name.to_string(), SEle::SProc(box LamOrFn::Fn(func))));
 	}
 
+	let mut macro_env = PrecompileEnv::new();
 	let mut env = Env::new(vars);
 
 	let stdlib_src = input::read_stdlib();
-	let parsed = parse_expressions(split_source_text(stdlib_src.as_slice()).as_slice());
-	env.eval_sequence(parsed);
+	env.eval_sequence(parse_expressions(split_source_text(stdlib_src.as_slice()).as_slice())
+		.into_iter().map(|e| macro_env.expand(e)).collect());
 
 	if let Some(input) = input::get_input() {
 		let begin_wrapped = format!("(begin {})", input);
@@ -97,9 +96,9 @@ fn main(){
 		if parsed.len() != 1 {
 			panic!("Parsed source is invalid")
 		}
-		env.eval(parsed.pop_head().unwrap());
+		env.eval(macro_env.expand(parsed.pop_head().unwrap()));
 	} else {
 		env.make_lenient();
-		interactive_shell(&mut env);
+		interactive_shell(&mut env, &mut macro_env);
 	}
 }

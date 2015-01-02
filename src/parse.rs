@@ -6,7 +6,7 @@ use lib::ScmAlertMode;
 pub fn split_source_text(src: &str) -> Vec<&str> {
 	let mut ss = Vec::with_capacity(src.len() / 4);
 	let mut start_pos = 0;
-	let (mut in_string, mut in_escape, mut in_comment) = (false,false,false);
+	let (mut in_string, mut in_escape, mut in_comment) = (false, false, false);
 	let mut in_space = true;
 	let mut char_iter = src.char_indices();
 	loop {
@@ -102,7 +102,7 @@ fn parse_binding(s: &str) -> Option<String> {
 }
 
 fn parse_number(s: &str) -> Option<f64> {
-	s.parse()
+	s.replace("_", "").parse()
 }
 
 fn parse_str_literal(s: &str) -> Option<&str> {
