@@ -594,8 +594,7 @@ impl Env {
 		}
 	}
 
-	/// Evaluates the arguments to the expression and applies the evaled args. Also evaluates
-	/// the procedure and applies the `SProc` containing both the lambda and the name.
+	/// Evaluates the arguments to the expression and applies the evaled args.
 	pub fn apply_args(&mut self, mut expr: List) -> List {
 		let mut head = expr.pop_head().unwrap();
 		if let SBinding(binding) = head.clone() {
@@ -649,16 +648,9 @@ impl Env {
 		tail_element
 	}
 
-	// Use this for cases like:
-	// (define (for iterator to-run)
-	//     (define (iter i)
-	//         (define result (to-run (iterator i)))
-	//         (define next (iterator (1+ i)))
-	//         (if (not next)
-	//             result
-	//             (iter iterator to-run (1+ i))))
-	//     (iter 0))
-	// atm, `iterator` in `iter` is undefined due to tail call stuff and application of args.
+	// If the retruned element is a lambda, or an expression with a user defined procedure as
+	// its head, capture all vars in current scope. This is required in order for closures and
+	// tail call optimization to work.
 	pub fn capture_vars_for_lambda(&mut self, maybe_lambda: SEle, vars: VarStack) -> SEle {
 		match maybe_lambda {
 			SProc(box LamOrFn::Lam(mut lambda)) => {
@@ -667,17 +659,22 @@ impl Env {
 				}
 				SProc(box LamOrFn::Lam(lambda))
 			},
-			SExpr(mut expr) => if Some(&SBinding("lambda".to_string())) == expr.head() {
-					let lambda = self.trampoline(expr);
-					self.capture_vars_for_lambda(lambda, vars)
-				} else if let Some(&SProc(box LamOrFn::Lam(ref mut lambda))) =
-					expr.head_mut()
-				{
-					for var_def in vars.into_iter() {
-						lambda.captured_var_stack.push(var_def);
+			SExpr(mut expr) => {
+					if let Some(&SBinding(ref binding)) = expr.head() {
+						if *binding == "lambda" {
+							let lambda = self.trampoline(expr);
+							return self.capture_vars_for_lambda(lambda,
+								vars);
+						}
+					} else if let Some(&SProc(box LamOrFn::Lam(ref mut lambda)))
+						= expr.head_mut()
+					{
+						for var_def in vars.into_iter() {
+							lambda.captured_var_stack.push(var_def);
+						}
 					}
-					SExpr(expr)
-				} else {
+					// NOTE: Sometimes the procedure head is captured twice.
+					// One time is required for TCO, but twice is wrong.
 					SExpr(expr)
 				},
 			_ => maybe_lambda,
