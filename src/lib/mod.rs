@@ -667,9 +667,16 @@ impl Env {
 				}
 				SProc(box LamOrFn::Lam(lambda))
 			},
-			SExpr(expr) => if Some(&SBinding("lambda".to_string())) == expr.head() {
+			SExpr(mut expr) => if Some(&SBinding("lambda".to_string())) == expr.head() {
 					let lambda = self.trampoline(expr);
 					self.capture_vars_for_lambda(lambda, vars)
+				} else if let Some(&SProc(box LamOrFn::Lam(ref mut lambda))) =
+					expr.head_mut()
+				{
+					for var_def in vars.into_iter() {
+						lambda.captured_var_stack.push(var_def);
+					}
+					SExpr(expr)
 				} else {
 					SExpr(expr)
 				},

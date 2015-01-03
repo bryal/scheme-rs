@@ -489,6 +489,7 @@ pub fn standard_library() -> (Vec<(&'static str, &'static ScmFn)>, Vec<(&'static
 
 	let std_vars = vec![
 		("PI", SNum(PI)),
+		("null", unit()),
 	];
 
 	(std_procs, std_vars)

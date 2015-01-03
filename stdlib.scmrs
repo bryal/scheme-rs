@@ -44,18 +44,30 @@
             acc
             (iter (push acc current) iterator (1+ i))))
     (iter '() iterator 0))
+
+;(define (for-iterator iterator to-run)
+;    (define (iter iterator to-run i)
+;        (define current (iterator i))
+;        (if (not current)
+;            null
+;            (begin
+;                (to-run current)
+;                (iter iterator to-run (1+ i)))))
+;    (iter iterator to-run 0))
+
 (define (for-iterator iterator to-run)
-    (define (iter iterator to-run i)
+    (define (iter i)
         (define current (iterator i))
         (if (not current)
-            (list)
+            null
             (begin
                 (to-run current)
-                (iter iterator to-run (1+ i)))))
-    (iter iterator to-run 0))
+                (iter (1+ i)))))
+    (iter 0))
+
 (define (for-list-as xs to-run)
     (if (eqv? xs '())
-        (list)
+        null
         (begin
             (to-run (car xs))
             (for-list-as (cdr xs) to-run))))
