@@ -14,13 +14,9 @@ use super::{
 	pop_var_defs};
 use super::SEle::*;
 
-// TODO: instead of doing env.eval_expr, the direct use of the scm_* function can often be used
-// e.g. scm_define(env, list)
-// TODO: Make the arithmetic functions iterative rather than recursive. They are recursive to
-// imitate scheme, but it is probably not optimal for performance
 // TODO: Concretely decide which functions/procedures will return what sort of values.
 // e.g. `begin` will not return a binding, only expressions with applied arguments or literals
-// TODO: macro for constructing scheme expression
+// TODO: macro for constructing scheme expressions/lists
 
 fn scm_add(env: &mut Env, args: List) -> SEle {
 	let mut acc = 0.0;
@@ -51,20 +47,34 @@ fn scm_append(env: &mut Env, args: List) -> SEle {
 fn scm_begin(env: &mut Env, args: List) -> SEle {
 	let previous_n_vars = env.var_stack.len();
 	let first_pass = env.eval_sequence_lazy(args);
-	let mut tail_element = if let SExpr(expr) = first_pass {
-		let tail_elem = env.eval_expr_to_tail(expr);
+	let n_vars_in_block = env.var_stack.len() - previous_n_vars;
+	if let SExpr(expr) = first_pass {
+		let mut tail_elem = env.eval_expr_to_tail(expr);
 		if let SExpr(tail_expr) = tail_elem {
-			SExpr(env.apply_args(tail_expr))
+			let mut with_applied_args = env.apply_args(tail_expr);
+			if let Some(&SProc(box LamOrFn::Lam(ref mut lambda))) =
+				with_applied_args.head_mut()
+			{
+				// Capture definitions from this begin block.
+				let vars_from_block = pop_var_defs(&mut env.var_stack,
+					n_vars_in_block);
+				env.capture_vars_for_lambda(lambda, vars_from_block);
+			} else {
+				pop_var_defs(&mut env.var_stack, n_vars_in_block);
+			}
+			return SExpr(with_applied_args);
+		} else if let SProc(box LamOrFn::Lam(ref mut lambda)) = tail_elem {
+			let vars_from_block = pop_var_defs(&mut env.var_stack,
+				n_vars_in_block);
+			env.capture_vars_for_lambda(lambda, vars_from_block);
 		} else {
-			tail_elem
+			pop_var_defs(&mut env.var_stack, n_vars_in_block);
 		}
+		tail_elem
 	} else {
+		pop_var_defs(&mut env.var_stack, n_vars_in_block);
 		first_pass
-	};
-	let current_n_vars = env.var_stack.len();
-	let popped_var_defs = pop_var_defs(&mut env.var_stack, current_n_vars - previous_n_vars);
-	tail_element = env.capture_vars_for_lambda(tail_element, popped_var_defs);
-	tail_element
+	}
 }
 fn scm_car(env: &mut Env, mut args: List) -> SEle {
 	if args.len() != 1 {
@@ -159,7 +169,7 @@ fn scm_display(env: &mut Env, mut args: List) -> SEle {
 	if args.len() != 1 {
 		panic!("Arity missmatch")
 	}
-	println!("{}", env.eval(args.pop_head().expect(
+	print!("{}", env.eval(args.pop_head().expect(
 		"Could not retrieve argument")));
 	unit()
 }

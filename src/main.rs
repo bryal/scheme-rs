@@ -1,8 +1,7 @@
-#![feature(globs)]
-#![feature(unboxed_closures)]
 extern crate getopts;
 
 use std::io;
+use std::iter::repeat;
 
 use lib::{
 	SEle,
@@ -12,7 +11,7 @@ use lib::{
 	ScmAlertMode,
 	scheme_alert,
 	scheme_stdlib};
-use lib::macro::PrecompileEnv;
+use lib::scm_macro::PrecompileEnv;
 use parse::{
 	split_source_text,
 	parse_expressions};
@@ -51,7 +50,8 @@ fn interactive_shell(env: &mut Env, macro_env: &mut PrecompileEnv) {
 		rparen_surplus += right_paren_surplus(splitted.as_slice());
 		if rparen_surplus < 0 {
 			token_buf.push_all(to_strings(splitted.as_slice()).as_slice());
-			print!(">> {}", String::from_char((rparen_surplus * -2) as uint, ' '))
+			print!(">> {}", repeat(' ').take((rparen_surplus * -2) as uint)
+					.collect::<String>());
 		} else if rparen_surplus > 0 {
 			scheme_alert(ScmAlert::Unexp(")"), &ScmAlertMode::Warn);
 			token_buf.clear();

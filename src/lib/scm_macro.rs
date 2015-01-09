@@ -4,7 +4,7 @@ use super::{
 	SEle};
 use super::SEle::*;
 
-#[deriving(Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Transformer {
 	keywords: Vec<String>,
 	// Clauses of (pattern, template)
@@ -19,7 +19,7 @@ impl Transformer {
 
 pub type FnMacro = fn(&mut PrecompileEnv, List) -> SEle;
 
-#[deriving(Clone)]
+#[derive(Clone)]
 pub enum Macro {
 	Trans(Transformer),
 	Fn(&'static FnMacro)
@@ -35,9 +35,9 @@ impl PrecompileEnv {
 	}
 
 	fn get_macro(&self, to_get: &str) -> Option<Macro> {
-		for &(ref binding, ref macro) in self.macro_stack.iter().rev() {
+		for &(ref binding, ref macro_) in self.macro_stack.iter().rev() {
 			if *binding == to_get {
-				return Some(macro.clone());
+				return Some(macro_.clone());
 			}
 		}
 		None
@@ -82,9 +82,9 @@ impl PrecompileEnv {
 					} else {
 						panic!("Invalid `define-syntax`");
 					}
-				} else if let Some(macro) = self.get_macro(head_binding.as_slice())
+				} else if let Some(macro_) = self.get_macro(head_binding.as_slice())
 				{
-					match macro {
+					match macro_ {
 						Macro::Trans(ref transformer) => {
 							let expanded = transform(List::with_body(
 									SBinding(head_binding),
