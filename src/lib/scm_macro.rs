@@ -1,3 +1,5 @@
+use std::iter::repeat;
+
 use super::{
 	unit,
 	List,
@@ -113,35 +115,78 @@ impl PrecompileEnv {
 	}
 
 	pub fn expand(&mut self, ele: SEle) -> SEle {
-		match ele {
+		let exp = match ele {
 			SExpr(x) => {
 				self.expand_expr(x)
 			},
 			_ => ele
-		}
+		};
+		exp
 	}
 }
 
-fn bind_transform_pattern<'a>(expr: List, pattern: &'a List, keywords: &Vec<String>)
+/// Create variadic macro definitions for the elements in `elems_to_bind` based on the pattern
+/// `pattern_ele`.
+fn match_ellipsis(pattern_ele: &SEle, elems_to_bind: List) -> Vec<(&str, SEle)> {
+	if let &SBinding(ref binding) = pattern_ele {
+		// (a ...) for (x y z) => a = (x y z)
+		vec![(binding.as_slice(), SList(elems_to_bind))]
+	} else if let &SExpr(ref pattern_list) = pattern_ele {
+		// ((a b) ...) for ((x y) (z α)) => a = (x z) & b = (y α)
+		let mut bound_elems_lists = repeat(List::new()).take(pattern_list.len())
+			.collect::<Vec<_>>();
+		for elem_list in elems_to_bind.into_iter() {
+			for (elem, list) in elem_list.into_expr().into_iter().zip(
+					bound_elems_lists.iter_mut())
+			{
+				list.push(elem);
+			}
+		}
+		let approx_total_elems = bound_elems_lists.len() * pattern_list.len();
+		bound_elems_lists.into_iter().zip(pattern_list.iter()).fold(
+				Vec::with_capacity(approx_total_elems),
+				|mut acc, (list, pattern_ele2)| {
+					acc.extend(match_ellipsis(pattern_ele2, list).into_iter());
+					acc })
+	} else {
+		panic!("Invalid pattern.")
+	}
+}
+
+fn bind_transform_pattern<'a>(expr: List, pattern: &'a List, keywords: &[String])
 	-> Option<Vec<(&'a str, SEle)>>
 {
 	let mut ret_stack = Vec::with_capacity(4);
-	if expr.len() != pattern.len() {
-		return None;
-	}
-	for (sele, maybe_binding) in expr.into_iter().zip(pattern.iter()) {
-		if let &SBinding(ref pattern_binding) = maybe_binding {
-			if keywords.as_slice().contains(pattern_binding) {
-				if let SBinding(maybe_keyword) = sele {
-					if maybe_keyword == *pattern_binding {
-						continue
-					}
-					else { return None }
-				} else { return None }
+	let (mut expr_it, mut pattern_it) = (expr.into_iter(), pattern.iter());
+	while let (Some(elem_to_bind), Some(pattern_ele)) = (expr_it.next(), pattern_it.next()) {
+		if if let Some(&SBinding(ref maybe_ellipsis)) = pattern_it.peek() {
+				*maybe_ellipsis == "..." } else { false }
+		{
+			// If `pattern_ele` is followed by an ellipsis, it's variadic.
+			ret_stack.extend(match_ellipsis(pattern_ele, List::with_body(elem_to_bind,
+							expr_it.collect())).into_iter());
+			return Some(ret_stack);
+		} else if let &SBinding(ref binding) = pattern_ele {
+			if *binding == "_" {
+				continue;
+			} else if keywords.contains(binding) {
+				if if let SBinding(maybe_keyword) = elem_to_bind {
+						maybe_keyword == *binding } else { false }
+				{
+					continue;
+				} else {
+					return None;
+				}
 			}
-			if *pattern_binding != "_" {
-				ret_stack.push((pattern_binding.as_slice(), sele));
-			}
+			ret_stack.push((binding.as_slice(), elem_to_bind));
+		} else if let &SExpr(ref pattern_list) = pattern_ele {
+			if let SExpr(sele_expr) = elem_to_bind {
+				if let Some(macro_defs) =
+					bind_transform_pattern(sele_expr, pattern_list, keywords)
+				{
+					ret_stack.extend(macro_defs.into_iter())
+				} else { return None; }
+			} else { return None; }
 		} else {
 			panic!("Invalid pattern.")
 		}
@@ -150,27 +195,55 @@ fn bind_transform_pattern<'a>(expr: List, pattern: &'a List, keywords: &Vec<Stri
 }
 
 fn apply_template(template: SEle, binding_stack: &Vec<(&str, SEle)>) -> SEle {
-	match template {
-		SBinding(this_binding) => {
-				for &(ref binding, ref bound) in binding_stack.iter() {
-					if this_binding == *binding {
-						return bound.clone();
-					}
+	if let SBinding(this_binding) = template {
+		for &(ref binding, ref bound) in binding_stack.iter() {
+			if this_binding == *binding {
+				return bound.clone();
+			}
+		}
+		SBinding(this_binding)
+	} else if let SExpr(expr) = template {
+		let mut list = List::new();
+		let mut expr_it = expr.into_iter();
+		while let Some(e) = expr_it.next() {
+			if if let Some(&SBinding(ref maybe_ellipsis)) = expr_it.peek() {
+					*maybe_ellipsis == "..." } else { false }
+			{
+				let try_expand = apply_template(e, binding_stack);
+				if let SList(to_expand) = try_expand {
+					list.extend_rev(to_expand.into_iter().map(|x|
+							apply_template(x, binding_stack)));
+					expr_it.next(); // Skip the ellipsis
+					continue;
+				} else {
+					panic!("Trying to expand something non expandable,\
+						`{}`, in macro.", try_expand)
 				}
-				SBinding(this_binding)
-			},
-		SExpr(expr) =>
-			SExpr(expr.into_iter().map(|e| apply_template(e, binding_stack)).collect()),
-		// TODO: Maybe more needs to be added here, not sure.
-		_ => template,
+			} else {
+				list.push(apply_template(e, binding_stack));
+			}
+		}
+		SExpr(list)
+	} else {
+		template
 	}
 }
 
+/// Transorm the expression according to pattern -> template of the transformer
 fn transform(expr: List, transformer: &Transformer) -> SEle {
 	for &(ref pattern, ref template) in transformer.clauses.iter() {
+		if let Some(&SBinding(ref last_ele)) = pattern.last_node().head() {
+			if *last_ele != "..." && pattern.len() != expr.len() {
+				continue;
+			}
+		} else {
+			panic!("Pattern is empty");
+		}
 		if let Some(bound_patterns_stack) =
 			// NOTE: expr.clone() should not be needed here? compiler bugg maybe.
-			bind_transform_pattern(expr.clone(), pattern, &transformer.keywords)
+			// TODO
+			bind_transform_pattern(expr.clone(), pattern,
+				transformer.keywords.as_slice())
 		{
 			return apply_template(template.clone(), &bound_patterns_stack);
 		}
@@ -182,27 +255,3 @@ pub fn expand_macros(ele: SEle) -> SEle {
 	let mut macro_env = PrecompileEnv{macro_stack: vec![]};
 	macro_env.expand(ele)
 }
-
-// fn mac_quote(env: &mut Env, args: List) -> SEle {
-// 	let mut acc = 0.0;
-// 	for expr in args.into_iter() {
-// 		let ele = env.eval(expr);
-// 		if let SNum(x) = ele {
-// 			acc += x;
-// 		} else {
-// 			scheme_alert(ScmAlert::NaN(ele), &env.error_mode);
-// 		}
-// 	}
-// 	SNum(acc)
-// }
-
-// static MAC_QUOTE: &'static FnMacro = &(mac_quote as FnMacro);
-
-// pub fn standard_macros() -> Vec<(&'static str, &'static FnMacro)> {
-// 	// Scheme Standard macro library
-// 	let std_macros = vec![
-// 		("quote", MAC_QUOTE),
-// 	];
-
-// 	std_macros
-// }

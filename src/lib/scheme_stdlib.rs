@@ -30,6 +30,9 @@ fn scm_add(env: &mut Env, args: List) -> SEle {
 	}
 	SNum(acc)
 }
+fn scm_and(env: &mut Env, args: List) -> SEle {
+	SBool(args.into_iter().all(|e| env.elem_is_true(e)))
+}
 fn scm_append(env: &mut Env, args: List) -> SEle {
 	let mut list = List::new();
 	for maybe_list in args.into_iter() {
@@ -41,28 +44,27 @@ fn scm_append(env: &mut Env, args: List) -> SEle {
 	}
 	SList(list)
 }
-// TODO: define's are lost on return of applied expression. In case of local procedure, things fuck.
-// might be specific to define's, check it out
 /// Will return literal or expression with applied args, no bindings.
 fn scm_begin(env: &mut Env, args: List) -> SEle {
 	let previous_n_vars = env.var_stack.len();
 	let first_pass = env.eval_sequence_lazy(args);
 	let n_vars_in_block = env.var_stack.len() - previous_n_vars;
 	if let SExpr(expr) = first_pass {
+		// capturing happens after this
 		let mut tail_elem = env.eval_expr_to_tail(expr);
 		if let SExpr(tail_expr) = tail_elem {
-			let mut with_applied_args = env.apply_args(tail_expr);
-			if let Some(&SProc(box LamOrFn::Lam(ref mut lambda))) =
-				with_applied_args.head_mut()
-			{
+			// but before this
+			let mut applied = env.apply_args(tail_expr);
+			if let Some(&SProc(box LamOrFn::Lam(ref mut lambda))) = applied.head_mut() {
 				// Capture definitions from this begin block.
 				let vars_from_block = pop_var_defs(&mut env.var_stack,
 					n_vars_in_block);
+				// NOT HERE
 				env.capture_vars_for_lambda(lambda, vars_from_block);
 			} else {
 				pop_var_defs(&mut env.var_stack, n_vars_in_block);
 			}
-			return SExpr(with_applied_args);
+			return SExpr(applied);
 		} else if let SProc(box LamOrFn::Lam(ref mut lambda)) = tail_elem {
 			let vars_from_block = pop_var_defs(&mut env.var_stack,
 				n_vars_in_block);
@@ -241,7 +243,7 @@ fn scm_list_star(env: &mut Env, args: List) -> SEle {
 	let len = args.len();
 	let mut iter = args.into_iter();
 	let mut list: List =
-		range(0, len - 2).map(|_| env.eval(iter.next().unwrap())).collect();
+		(0..len - 2).map(|_| env.eval(iter.next().unwrap())).collect();
 	{
 		let mut next_to_last_cons = list.push(env.eval(iter.next().unwrap()));
 		match env.eval(iter.next().unwrap()) {
@@ -346,6 +348,9 @@ fn scm_op_lteq(env: &mut Env, mut args: List) -> SEle {
 		SBool(iter.all(|e| { let ret = last <= e; last = e; ret }))
 	}
 }
+fn scm_or(env: &mut Env, args: List) -> SEle {
+	SBool(args.into_iter().any(|e| env.elem_is_true(e)))
+}
 fn scm_push(env: &mut Env, mut args: List) -> SEle {
 	if args.len() < 2 {
 		scheme_alert(ScmAlert::ArityMiss("push", args.len(),"<",2), &env.error_mode)
@@ -435,6 +440,7 @@ fn scm_var_stack(env: &mut Env, args: List) -> SEle {
 }
 
 static P_SCM_ADD: &'static ScmFn = &(scm_add as ScmFn);
+static P_SCM_AND: &'static ScmFn = &(scm_and as ScmFn);
 static P_SCM_APPEND: &'static ScmFn = &(scm_append as ScmFn);
 static P_SCM_BEGIN: &'static ScmFn = &(scm_begin as ScmFn);
 static P_SCM_CAR: &'static ScmFn = &(scm_car as ScmFn);
@@ -456,6 +462,7 @@ static P_SCM_OP_GT: &'static ScmFn = &(scm_op_gt as ScmFn);
 static P_SCM_OP_GTEQ: &'static ScmFn = &(scm_op_gteq as ScmFn);
 static P_SCM_OP_LT: &'static ScmFn = &(scm_op_lt as ScmFn);
 static P_SCM_OP_LTEQ: &'static ScmFn = &(scm_op_lteq as ScmFn);
+static P_SCM_OR: &'static ScmFn = &(scm_or as ScmFn);
 static P_SCM_PUSH: &'static ScmFn = &(scm_push as ScmFn);
 static P_SCM_QUOTE: &'static ScmFn = &(scm_quote as ScmFn);
 static P_SCM_REMAINDER: &'static ScmFn = &(scm_remainder as ScmFn);
@@ -468,6 +475,7 @@ pub fn standard_library() -> (Vec<(&'static str, &'static ScmFn)>, Vec<(&'static
 	// TODO: any other way than using len to measure num of args? Unefficient with List
 	let std_procs = vec![
 		("+", P_SCM_ADD),
+		("and", P_SCM_AND),
 		("append", P_SCM_APPEND),
 		("begin", P_SCM_BEGIN),
 		("car", P_SCM_CAR),
@@ -489,6 +497,7 @@ pub fn standard_library() -> (Vec<(&'static str, &'static ScmFn)>, Vec<(&'static
 		(">=", P_SCM_OP_GTEQ),
 		("<", P_SCM_OP_LT),
 		("<=", P_SCM_OP_LTEQ),
+		("or", P_SCM_OR),
 		("push", P_SCM_PUSH),
 		("quote", P_SCM_QUOTE),
 		("remainder", P_SCM_REMAINDER),

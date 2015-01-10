@@ -3,7 +3,9 @@
 (define-syntax if ()
     ((if condition consequence alternative)
      (cond (condition consequence)
-           (else alternative))))
+           (else alternative)))
+    ((if condition consequence)
+     (cond (condition consequence))))
 (define-syntax for (in)
     ((for i in iterator expression)
      (for-iterator iterator (lambda (i) expression)))
@@ -20,7 +22,16 @@
 (define-syntax 1- () ((_ x) (- x 1)))
 (define-syntax 1+ () ((_ x) (+ x 1)))
 (define-syntax double () ((_ x) (+ x x)))
+(define-syntax displayln ()
+    ((_ x) (begin (display x) (newline))))
+(define-syntax option (None)
+    ((_ None) (list #t '()))
+    ((_ x)    (list #f x)))
+(define-syntax let ()
+    ((_ ((bindings values) ...) body ...)
+     ((lambda (bindings ...) body ...) values ...)))
 
+; Math
 (define (halve x) (/ x 2))
 (define (even? x) (eqv? (remainder x 2) 0))
 (define (square x) (* x x))
@@ -31,12 +42,51 @@
             acc
             (iter (* acc n) (- n 1))))
     (iter 1 n))
+(define (max a b)
+    (if (> a b)
+        a
+        b))
+(define (min a b)
+    (if (< a b)
+        a
+        b))
+
+(define (some? maybe)
+    (if (car maybe)
+        #f
+        #t))
+(define (unwrap maybe)
+    ; Add some sort of panic or scm_error support
+    (cadr maybe))
+
+; Iterators must return an option.
 (define (range from to)
     (lambda (i)
-        (define n (+ i from))
-        (if (>= n to)
-            #f
-            n)))
+        (if (>= to from)
+            (begin
+                (define n (+ from i))
+                (if (and (< n to) (>= n from))
+                    (option n)
+                    (option None)))
+            (begin
+                (define n (- from i))
+                (if (and (> n to) (<= n from))
+                    (option n)
+                    (option None))))))
+(define (take n-to-take iterator1)
+    (lambda (i)
+        (if (< i n-to-take)
+            (iterator1 i)
+            (option None))))
+(define (skip n-to-skip iterator2)
+    (lambda (i)
+        (iterator2 (+ i n-to-skip))))
+(define (map iterator mapper)
+    (lambda (i)
+        (define current (iterator i))
+        (if (some? current)
+            (mapper current)
+            (option None))))
 (define (collect iterator)
     (define (iter acc iterator i)
         (define current (iterator i))
@@ -45,23 +95,13 @@
             (iter (push acc current) iterator (1+ i))))
     (iter '() iterator 0))
 
-;(define (for-iterator iterator to-run)
-;    (define (iter iterator to-run i)
-;        (define current (iterator i))
-;        (if (not current)
-;            null
-;            (begin
-;                (to-run current)
-;                (iter iterator to-run (1+ i)))))
-;    (iter iterator to-run 0))
-
 (define (for-iterator iterator to-run)
     (define (iter i)
         (define current (iterator i))
-        (if (not current)
+        (if (not (some? current))
             null
             (begin
-                (to-run current)
+                (to-run (unwrap current))
                 (iter (1+ i)))))
     (iter 0))
 
@@ -73,6 +113,7 @@
             (for-list-as (cdr xs) to-run))))
 (define (fib n)
     (define (iter a b i)
+        ;(var-stack)
         (if (= i 0)
             b
             (iter b (+ a b) (1- i))))
