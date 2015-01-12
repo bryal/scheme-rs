@@ -27,8 +27,8 @@
 (define-syntax option (None)
     ((_ None) (list #t '()))
     ((_ x)    (list #f x)))
-(define-syntax let ()
-    ((_ ((bindings values) ...) body ...)
+(define-syntax let (let)
+    ((let ((bindings values) ...) body ...)
      ((lambda (bindings ...) body ...) values ...)))
 
 ; Math
@@ -58,6 +58,11 @@
 (define (unwrap maybe)
     ; Add some sort of panic or scm_error support
     (cadr maybe))
+
+; TODO: update iterators
+; iterator is (acc advance)
+; tprocedure `next` runs (advance acc) and updates acc.
+; Returns option depending on result of above
 
 ; Iterators must return an option.
 (define (range from to)
@@ -120,3 +125,5 @@
     (if (= n 0)
         0
         (iter 0 1 (1- n))))
+
+; TODO: add supprt for brackets as an alias to (list ) maybe?

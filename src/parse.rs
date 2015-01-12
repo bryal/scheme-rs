@@ -1,4 +1,7 @@
-use lib::{List, scheme_alert};
+use lib::{
+	List,
+	ScmList,
+	scheme_alert};
 use lib::SEle::*;
 use lib::ScmAlert;
 use lib::ScmAlertMode;
@@ -133,8 +136,8 @@ fn parse_bool(s: &str) -> Option<bool> {
 
 /// Takes a slice of separated symbols, each being a parenthesis, a bool literal, a numeric literal
 /// or whatever. These tokens are parsed into `SEle`'s so that they can be evaluated as expressions.
-pub fn parse_expressions(unparsed: &[&str]) -> List {
-	let mut parsed = List::new();
+pub fn parse_expressions(unparsed: &[&str]) -> ScmList {
+	let mut parsed = list![];
 	let mut i = 0;
 	while i < unparsed.len() {
 		let current_s = unparsed[i];
@@ -152,8 +155,7 @@ pub fn parse_expressions(unparsed: &[&str]) -> List {
 				let list_item_to_parse = unparsed.slice(i+1, i+1+matching_paren);
 				let list = SExpr(parse_expressions(list_item_to_parse));
 				// TODO: add macro to create Lists similar to vec![]
-				let quoted = SExpr(List::from_vec(vec![SBinding("quote".to_string()),
-							list]));
+				let quoted = SExpr(list![SBinding("quote".to_string()), list]);
 				parsed.push(quoted);
 				i = i+matching_paren+1;
 			} else {

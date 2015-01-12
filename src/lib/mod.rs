@@ -5,16 +5,18 @@
 // TODO: Consider making more use of pass-by-reference rather than cloning everywhere
 // TODO: Document wether functions return bindings, atoms, expressions or whatever.
 // TODO: display line number on error
+// NOTE: Maybe change use of List to rusts own DList? Cleaner, and maybe better performance.
+// http://doc.rust-lang.org/std/collections/dlist/struct.DList.html
 
 use std::fmt;
-use std::mem;
 use std::cmp;
-use std::ops::Index;
-use std::iter::FromIterator;
 
+pub use super::linked_list::List;
 use self::SEle::*;
 pub mod scheme_stdlib;
 pub mod scm_macro;
+
+pub type ScmList = List<SEle>;
 
 pub enum ScmAlertMode {
 	Warn,
@@ -62,287 +64,6 @@ pub fn scheme_alert(alert: ScmAlert, a_type: &ScmAlertMode) -> SEle {
 	unit()
 }
 
-pub struct ListItems<'a> {
-	list: &'a List
-}
-
-impl<'a> Iterator for ListItems<'a> {
-	type Item = &'a SEle;
-	fn next(&mut self) -> Option<&'a SEle> {
-		let ret = self.list.head();
-		if let Some(tail) = self.list.tail() {
-			self.list = tail;
-		}
-		ret
-	}
-}
-
-impl<'a> ListItems<'a> {
-	pub fn peek(&self) -> Option<&SEle> {
-		self.list.head()
-	}
-}
-
-pub struct MoveListItems {
-	list: List
-}
-
-impl Iterator for MoveListItems {
-	type Item = SEle;
-	fn next(&mut self) -> Option<SEle> {
-		self.list.pop_head()
-	}
-}
-
-impl MoveListItems {
-	pub fn peek(&self) -> Option<&SEle> {
-		self.list.head()
-	}
-}
-
-#[derive(Clone, PartialEq)]
-pub enum List {
-	Cons(Box<SEle>, Box<List>),
-	Nil
-}
-
-impl fmt::Show for List {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		match *self {
-			List::Cons(ref ele, ref link) => write!(f, "{} {}", ele, link),
-			List::Nil => write!(f, "")
-		}
-	}
-}
-
-impl Extend<SEle> for List {
-	// Note: elements are prepended for performance
-	fn extend<T: Iterator<Item=SEle>>(&mut self, mut iterator: T) {
-		for e in iterator { self.prepush(e); }
-	}
-}
-
-impl List {
-	pub fn new() -> List {
-		List::Nil
-	}
-
-	pub fn with_body(head: SEle, tail: List) -> List {
-		List::Cons(box head, box tail)
-	}
-
-	pub fn with_head(head: SEle) -> List {
-		List::Cons(box head, box List::Nil)
-	}
-
-	pub fn from_vec(vals: Vec<SEle>) -> List {
-		let mut list = List::new();
-		for val in vals.into_iter() {
-			list.push(val);
-		}
-		list
-	}
-
-	pub fn len(&self) -> uint {
-		if self == &List::Nil {
-			0
-		} else {
-			let mut len = 0;
-			let mut current = self;
-			while let Some(l) = current.tail() {
-				current = l;
-				len += 1;
-			}
-			len
-		}
-	}
-
-	pub fn iter(&self) -> ListItems {
-		ListItems{list: self}
-	}
-
-	pub fn into_iter(self) -> MoveListItems {
-		MoveListItems{list: self}
-	}
-
-	pub fn contains(&self, other: &SEle) -> bool {
-		self.iter().any(|e| e == other)
-	}
-
-	pub fn swap_head(&mut self, val: &mut SEle) -> Result<(), ()> {
-		if let &List::Cons(box ref mut self_val, _) = self {
-			mem::swap(val, self_val);
-			Ok(())
-		} else {
-			Err(())
-		}
-	}
-
-	pub fn swap_tail(&mut self, link: &mut List) -> Result<(), ()> {
-		if let &List::Cons(_, box ref mut self_link) = self {
-			mem::swap(link, self_link);
-			Ok(())
-		} else {
-			Err(())
-		}
-	}
-
-	pub fn empty(&mut self) -> &mut Self {
-		*self = List::Nil;
-		self
-	}
-
-	/// Returns a reference the first value in the list.
-	pub fn head(&self) -> Option<&SEle> {
-		if let &List::Cons(box ref val, _) = self {
-			Some(val)
-		} else {
-			None
-		}
-	}
-
-	pub fn head_mut(&mut self) -> Option<&mut SEle> {
-		if let &List::Cons(box ref mut val, _) = self {
-			Some(val)
-		} else {
-			None
-		}
-	}
-
-	/// Returns a reference a list containing all but the first value.
-	pub fn tail(&self) -> Option<&List> {
-		if let &List::Cons(_, box ref list) = self {
-			Some(list)
-		} else {
-			None
-		}
-	}
-
-	pub fn tail_mut(&mut self) -> Option<&mut List> {
-		if let &List::Cons(_, box ref mut list) = self {
-			Some(list)
-		} else {
-			None
-		}
-	}
-
-	pub fn last_node(&self) -> &List {
-		if let &List::Cons(_, box List::Nil) = self {
-			self
-		} else if let &List::Cons(_, box ref list) = self {
-			list.last_node()
-		} else {
-			self
-		}
-	}
-
-	pub fn last_node_mut(&mut self) -> &mut List {
-		if let &List::Cons(_, box List::Nil) = self {
-			self
-		} else if let &List::Cons(_, box ref mut list) = self {
-			list.last_node_mut()
-		} else {
-			self
-		}
-	}
-
-	pub fn last_link(&mut self) -> &mut List {
-		if let &List::Cons(_, box ref mut list) = self {
-			list.last_link()
-		} else {
-			self
-		}
-	}
-
-	/// Pops the first value from the list. `self` is now its old tail.
-	pub fn pop_head(&mut self) -> Option<SEle> {
-		if let Some(mut cdr) = self.pop_tail() {
-			mem::swap(&mut cdr, self);
-			if let List::Cons(box val, _) = cdr {
-				Some(val)
-			} else {
-				None
-			}
-		} else {
-			None
-		}
-	}
-
-	/// Pops the tail from the list. `self` is now only the first entry.
-	pub fn pop_tail(&mut self) -> Option<List> {
-		let mut cdr = List::Nil;
-		if let &List::Cons(_, _) = self {
-			if let Err(_) = self.swap_tail(&mut cdr) {
-				return None;
-			}
-			Some(cdr)
-		} else {
-			None
-		}
-	}
-
-	/// Pushes an element to the end of the list. Returns link to last Cons in list.
-	pub fn push(&mut self, ele: SEle) -> &mut List {
-		match self {
-			&List::Cons(_, box List::Nil) => {
-				let mut to_swap = List::with_head(ele);
-				self.swap_tail(&mut to_swap).unwrap();
-				self
-			},
-			&List::Cons(_, box ref mut self_link) => self_link.push(ele),
-			_ => {
-				let mut new_self = List::Cons(box ele, box List::Nil);
-				mem::swap(self, &mut new_self);
-				self
-			}
-		}
-	}
-
-	/// Inserts an element at the beginning of the list.
-	pub fn prepush(&mut self, ele: SEle) -> &mut List {
-		let mut local_self = List::Nil;
-		mem::swap(self, &mut local_self);
-		let mut new_self = List::Cons(box ele, box local_self);
-		mem::swap(self, &mut new_self);
-		self
-	}
-
-	/// Elements are appended, unlike in `extend`. This is bad for performance though,
-	/// so use `extend` when possible.
-	pub fn extend_rev<T: Iterator<Item=SEle>>(&mut self, mut iterator: T) {
-		for e in iterator { self.push(e); }
-	}
-}
-
-impl FromIterator<SEle> for List {
-	fn from_iter<T: Iterator<Item=SEle>>(mut iterator: T) -> List {
-		let mut list = List::new();
-		for element in iterator {
-			list.push(element);
-		}
-		list
-	}
-}
-
-impl Index<uint> for List {
-	type Output = SEle;
-	fn index(&self, index: &uint) -> &SEle {
-		let mut current = self;
-		for _ in (0..*index) {
-			if let Some(tail) = current.tail() {
-				current = tail;
-			} else {
-				panic!("List index out of range");
-			}
-		}
-		if let Some(val) = current.head() {
-			val
-		} else {
-			panic!("List index out of range")
-		}
-	}
-}
-
 type VarStack = Vec<(String, SEle)>;
 
 /// Returns empty list (Nil) if var is not on stack.
@@ -366,8 +87,8 @@ fn pop_var_defs(stack: &mut VarStack, n: uint) -> VarStack {
 pub struct Lambda {
 	binding: Option<String>,
 	arg_names: Vec<String>,
-	// Body is an s-expression as a `List`.
-	body: List,
+	// Body is an s-expression as a `ScmList`.
+	body: ScmList,
 	variadic: bool,
 	// Lambdas will capture variables by reference when in scope, but if the lambda is passed to
 	// a lower scope, or in case of Tail Calls, some vars will be captured by move/copy.
@@ -375,12 +96,12 @@ pub struct Lambda {
 }
 
 impl Lambda {
-	pub fn new(arg_names: Vec<String>, body: List) -> Lambda {
+	pub fn new(arg_names: Vec<String>, body: ScmList) -> Lambda {
 		Lambda{binding: None, arg_names: arg_names, body: body, variadic: false,
 			captured_var_stack: vec![]}
 	}
 
-	pub fn new_variadic(arg_name: String, body: List) -> Lambda {
+	pub fn new_variadic(arg_name: String, body: ScmList) -> Lambda {
 		Lambda{binding: None, arg_names: vec![arg_name], body: body, variadic: true,
 			captured_var_stack: vec![]}
 	}
@@ -411,13 +132,13 @@ impl PartialEq for LamOrFn {
 #[derive(Clone, PartialEq)]
 #[allow(dead_code)]
 pub enum SEle {
-	SExpr(List),
+	SExpr(ScmList),
 	SBinding(String),
 	SNum(f64),
 	SStr(String),
 	SSymbol(String),
 	SBool(bool),
-	SList(List),
+	SList(ScmList),
 	// The SProc itself may optionally contain a name. This is applied in `apply_args` so that
 	// the procedure may call itself
 	// TODO: fix better solution than sometimes having a name.
@@ -433,20 +154,20 @@ impl SEle {
 			&SStr(_) => "String",
 			&SSymbol(_) => "Symbol",
 			&SBool(_) => "Bool",
-			&SList(ref l) if l == &List::Nil => "Empty List (Nil)",
+			&SList(ref l) if l == &list![] => "Empty List (Nil)",
 			&SList(_) => "List",
 			&SProc(_) => "Procedure"
 		}
 	}
 
-	fn into_expr(self) -> List {
+	fn into_expr(self) -> ScmList {
 		if let SExpr(expr) = self {
 			expr
 		} else {
 			panic!("Element is not an expression. `{}`", self)
 		}
 	}
-	fn into_list(self) -> List {
+	fn into_list(self) -> ScmList {
 		if let SList(list) = self {
 			list
 		} else {
@@ -481,10 +202,10 @@ impl fmt::Show for SEle {
 }
 
 pub fn unit() -> SEle {
-	SList(List::Nil)
+	SList(list![])
 }
 
-pub type ScmFn = fn(&mut Env, List) -> SEle;
+pub type ScmFn = fn(&mut Env, ScmList) -> SEle;
 
 pub struct Env {
 	pub var_stack: VarStack,
@@ -538,7 +259,7 @@ impl Env {
 
 	// Extract the procedure name and argument names for the `define` header `head`
 	// TODO: use scheme_alert instead of panic
-	pub fn dismantle_proc_head(&mut self, mut head: List) -> (String, Vec<String>) {
+	pub fn dismantle_proc_head(&mut self, mut head: ScmList) -> (String, Vec<String>) {
 		if let Some(SBinding(proc_name)) = head.pop_head() {
 			let var_names = head.into_iter().map(|e|
 					if let SBinding(var_bnd) = e {
@@ -556,7 +277,7 @@ impl Env {
 	// TODO: Fix to work with empty lists by remedying the `unwrap`
 	/// Evaluate the Scheme expression, assuming `expr` is a list of the expression body
 	/// starting with a procedure binding. May return binding.
-	fn eval_expr_lazy(&mut self, mut expr: List) -> SEle {
+	fn eval_expr_lazy(&mut self, mut expr: ScmList) -> SEle {
 		match self.eval(expr.pop_head().unwrap()) {
 			SProc(box LamOrFn::Lam(lambda)) => self.run_lambda(lambda, expr),
 			SProc(box LamOrFn::Fn(func)) => (*func)(self, expr),
@@ -566,7 +287,7 @@ impl Env {
 	}
 
 	// Will not return binding
-	fn eval_expr_to_tail(&mut self, mut expr: List) -> SEle {
+	fn eval_expr_to_tail(&mut self, mut expr: ScmList) -> SEle {
 		while let Some(_) = expr.head() {
 			let head = expr.head().unwrap().clone();
 			if let SBinding(proc_name) = head {
@@ -614,7 +335,7 @@ impl Env {
 		}
 	}
 
-	fn trampoline(&mut self, mut expr: List) -> SEle {
+	fn trampoline(&mut self, mut expr: ScmList) -> SEle {
 		loop {
 			let evaled = {let tmp = self.eval_expr_lazy(expr); self.get_bound_elem(tmp)};
 			if let SExpr(mut inner_expr) = evaled {
@@ -632,8 +353,8 @@ impl Env {
 		}
 	}
 
-	fn eval_sequence_lazy(&mut self, exprs: List) -> SEle {	
-		if exprs != List::Nil {
+	fn eval_sequence_lazy(&mut self, exprs: ScmList) -> SEle {	
+		if exprs != list![] {
 			let mut it = exprs.into_iter();
 			while let Some(elem) = it.next() {
 				if it.peek() == None {
@@ -646,13 +367,13 @@ impl Env {
 	}
 
 	// Evaluates the elements in `exprs` ins equence, returning the value of the last eval.
-	pub fn eval_sequence(&mut self, exprs: List) -> SEle {
+	pub fn eval_sequence(&mut self, exprs: ScmList) -> SEle {
 		let last = self.eval_sequence_lazy(exprs);
 		self.eval(last)
 	}
 
-	// Evaluates all elements in `exprs` and collect into List.
-	fn eval_multiple(&mut self, exprs: List) -> List {
+	// Evaluates all elements in `exprs` and collect into ScmList.
+	fn eval_multiple(&mut self, exprs: ScmList) -> ScmList {
 		exprs.into_iter().map(|e| self.eval(e)).collect()
 	}
 
@@ -669,7 +390,7 @@ impl Env {
 	}
 
 	/// Returns expression with evaled args.
-	pub fn apply_args(&mut self, mut expr: List) -> List {
+	pub fn apply_args(&mut self, mut expr: ScmList) -> ScmList {
 		let mut head = expr.pop_head().unwrap();
 		if let SBinding(binding) = head.clone() {
 			// TODO: When define, lambda, etc. are macros to internal functions that
@@ -701,7 +422,7 @@ impl Env {
 	// called or either a) closures won't be possible; or b) the stack will grow fuck fast.
 	// Maybe compare tail expression name. If same, apply args and return expression for
 	// trampolining. Else, eval the expression in current scope.
-	fn run_lambda(&mut self, mut lambda: Lambda, args: List) -> SEle {
+	fn run_lambda(&mut self, mut lambda: Lambda, args: ScmList) -> SEle {
 		let previous_n_vars = self.var_stack.len();
 		let n_args = lambda.n_args();
 

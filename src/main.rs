@@ -1,5 +1,8 @@
 #![feature(slicing_syntax)]
+
 extern crate getopts;
+#[macro_use]
+extern crate linked_list;
 
 use std::io;
 use std::iter::repeat;

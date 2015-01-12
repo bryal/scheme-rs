@@ -3,6 +3,7 @@ use std::f64::NAN;
 
 use super::{
 	List,
+	ScmList,
 	SEle,
 	Env,
 	ScmFn,
@@ -18,7 +19,7 @@ use super::SEle::*;
 // e.g. `begin` will not return a binding, only expressions with applied arguments or literals
 // TODO: macro for constructing scheme expressions/lists
 
-fn scm_add(env: &mut Env, args: List) -> SEle {
+fn scm_add(env: &mut Env, args: ScmList) -> SEle {
 	let mut acc = 0.0;
 	for expr in args.into_iter() {
 		let ele = env.eval(expr);
@@ -30,11 +31,11 @@ fn scm_add(env: &mut Env, args: List) -> SEle {
 	}
 	SNum(acc)
 }
-fn scm_and(env: &mut Env, args: List) -> SEle {
+fn scm_and(env: &mut Env, args: ScmList) -> SEle {
 	SBool(args.into_iter().all(|e| env.elem_is_true(e)))
 }
-fn scm_append(env: &mut Env, args: List) -> SEle {
-	let mut list = List::new();
+fn scm_append(env: &mut Env, args: ScmList) -> SEle {
+	let mut list = list![];
 	for maybe_list in args.into_iter() {
 		if let SList(mut other_list) = env.eval(maybe_list) {
 			list.last_link().swap_tail(&mut other_list).unwrap();
@@ -45,7 +46,7 @@ fn scm_append(env: &mut Env, args: List) -> SEle {
 	SList(list)
 }
 /// Will return literal or expression with applied args, no bindings.
-fn scm_begin(env: &mut Env, args: List) -> SEle {
+fn scm_begin(env: &mut Env, args: ScmList) -> SEle {
 	let previous_n_vars = env.var_stack.len();
 	let first_pass = env.eval_sequence_lazy(args);
 	let n_vars_in_block = env.var_stack.len() - previous_n_vars;
@@ -78,7 +79,7 @@ fn scm_begin(env: &mut Env, args: List) -> SEle {
 		first_pass
 	}
 }
-fn scm_car(env: &mut Env, mut args: List) -> SEle {
+fn scm_car(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() != 1 {
 		scheme_alert(ScmAlert::ArityMiss("car", args.len(),"!=",1), &env.error_mode)
 	} else {
@@ -95,7 +96,7 @@ fn scm_car(env: &mut Env, mut args: List) -> SEle {
 		}
 	}
 }
-fn scm_cdr(env: &mut Env, mut args: List) -> SEle {
+fn scm_cdr(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() != 1 {
 		scheme_alert(ScmAlert::ArityMiss("cdr", args.len(),"!=",1), &env.error_mode)
 	} else {
@@ -113,7 +114,7 @@ fn scm_cdr(env: &mut Env, mut args: List) -> SEle {
 	}
 }
 /// Will return any element or composite expression, including bindings.
-fn scm_cond(env: &mut Env, args: List) -> SEle {
+fn scm_cond(env: &mut Env, args: ScmList) -> SEle {
 	if args.len() < 2 {
 		return scheme_alert(ScmAlert::ArityMiss("cond", args.len(),"<",2), &env.error_mode);
 	}
@@ -141,7 +142,7 @@ fn scm_cond(env: &mut Env, args: List) -> SEle {
 }
 // TODO: In case of defining expression to return lambda using the expressions args, lambda requires
 // associated var defs
-pub fn scm_define(env: &mut Env, mut args: List) -> SEle {
+pub fn scm_define(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() < 2 {
 		scheme_alert(ScmAlert::ArityMiss("define", args.len(),"<",2), &env.error_mode)
 	} else {
@@ -159,15 +160,14 @@ pub fn scm_define(env: &mut Env, mut args: List) -> SEle {
 				let (proc_name, arg_names) = env.dismantle_proc_head(head);
 				let procedure = box LamOrFn::Lam(Lambda::new(arg_names,
 						wrapped_body));
-				scm_define(env, List::with_body(SBinding(proc_name),
-						List::with_head(SProc(procedure))));
+				scm_define(env, list![SBinding(proc_name), SProc(procedure)]);
 			},
 			_ => {scheme_alert(ScmAlert::Bad("define body"), &env.error_mode);},
 		}
 		unit()
 	}
 }
-fn scm_display(env: &mut Env, mut args: List) -> SEle {
+fn scm_display(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() != 1 {
 		panic!("Arity missmatch")
 	}
@@ -175,7 +175,7 @@ fn scm_display(env: &mut Env, mut args: List) -> SEle {
 		"Could not retrieve argument")));
 	unit()
 }
-fn scm_div_iter(env: &mut Env, numerator: f64, mut denoms: List) -> f64 {
+fn scm_div_iter(env: &mut Env, numerator: f64, mut denoms: ScmList) -> f64 {
 	if let Some(expr) = denoms.pop_head() {
 		match env.eval(expr) {
 			SNum(x) => scm_div_iter(env, numerator / x, denoms),
@@ -188,7 +188,7 @@ fn scm_div_iter(env: &mut Env, numerator: f64, mut denoms: List) -> f64 {
 		numerator
 	}
 }
-fn scm_div(env: &mut Env, mut args: List) -> SEle {
+fn scm_div(env: &mut Env, mut args: ScmList) -> SEle {
 	SNum(if let Some(expr) = args.pop_head() {
 		if let SNum(x) = env.eval(expr) {
 			if args.len() < 1 {
@@ -203,7 +203,7 @@ fn scm_div(env: &mut Env, mut args: List) -> SEle {
 		panic!("Wrong number of arguments")
 	})
 }
-fn scm_eqv_q(env: &mut Env, mut args: List) -> SEle {
+fn scm_eqv_q(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() == 0 || args.len() == 1 {
 		SBool(true)
 	} else {
@@ -212,7 +212,7 @@ fn scm_eqv_q(env: &mut Env, mut args: List) -> SEle {
 		SBool(args.into_iter().all(|v2| v1 == v2))
 	}
 }
-fn scm_lambda(env: &mut Env, mut args: List) -> SEle {
+fn scm_lambda(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() < 2 {
 		scheme_alert(ScmAlert::ArityMiss("lambda", args.len(),"<",2), &env.error_mode)
 	} else {
@@ -235,14 +235,14 @@ fn scm_lambda(env: &mut Env, mut args: List) -> SEle {
 		}
 	}
 }
-fn scm_list(env: &mut Env, args: List) -> SEle {
+fn scm_list(env: &mut Env, args: ScmList) -> SEle {
 	SList(args.into_iter().map(|e| env.eval(e)).collect())
 }
 // Like `list`, but uses the last argument as tail if list.
-fn scm_list_star(env: &mut Env, args: List) -> SEle {
+fn scm_list_star(env: &mut Env, args: ScmList) -> SEle {
 	let len = args.len();
 	let mut iter = args.into_iter();
-	let mut list: List =
+	let mut list: ScmList =
 		(0..len - 2).map(|_| env.eval(iter.next().unwrap())).collect();
 	{
 		let mut next_to_last_cons = list.push(env.eval(iter.next().unwrap()));
@@ -253,7 +253,7 @@ fn scm_list_star(env: &mut Env, args: List) -> SEle {
 	}
 	SList(list)
 }
-fn scm_mul(env: &mut Env, args: List) -> SEle {
+fn scm_mul(env: &mut Env, args: ScmList) -> SEle {
 	let mut acc = 1.0;
 	for expr in args.into_iter() {
 		let ele = env.eval(expr);
@@ -266,25 +266,25 @@ fn scm_mul(env: &mut Env, args: List) -> SEle {
 	SNum(acc)
 }
 #[allow(unused_variables)]
-fn scm_newline(env: &mut Env, args: List) -> SEle {
+fn scm_newline(env: &mut Env, args: ScmList) -> SEle {
 	println!("");
 	unit()
 }
-fn scm_not(env: &mut Env, mut args: List) -> SEle {
+fn scm_not(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() != 1 {
 		scheme_alert(ScmAlert::ArityMiss("not", args.len(),"!=",1), &env.error_mode)
 	} else {
 		SBool(!env.elem_is_true(args.pop_head().unwrap()))
 	}
 }
-fn scm_number_q(env: &mut Env, mut args: List) -> SEle {
+fn scm_number_q(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() != 1 {
 		scheme_alert(ScmAlert::ArityMiss("number?", args.len(),"!=",1), &env.error_mode)
 	} else {
 		SBool(if let SNum(_) = env.eval(args.pop_head().unwrap()) { true } else { false })
 	}
 }
-fn scm_op_eq(env: &mut Env, mut args: List) -> SEle {
+fn scm_op_eq(env: &mut Env, mut args: ScmList) -> SEle {
 	args = env.eval_multiple(args);
 	if args.iter().all(|e| if let &SNum(_) = e { true } else { false }) {
 		scm_eqv_q(env, args)
@@ -292,7 +292,7 @@ fn scm_op_eq(env: &mut Env, mut args: List) -> SEle {
 		scheme_alert(ScmAlert::WrongType("Number", "_"), &env.error_mode)
 	}
 }
-fn scm_op_gt(env: &mut Env, mut args: List) -> SEle {
+fn scm_op_gt(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() == 0 || args.len() == 1 {
 		SBool(true)
 	} else {
@@ -306,7 +306,7 @@ fn scm_op_gt(env: &mut Env, mut args: List) -> SEle {
 		SBool(iter.all(|e| { let ret = last > e; last = e; ret }))
 	}
 }
-fn scm_op_gteq(env: &mut Env, mut args: List) -> SEle {
+fn scm_op_gteq(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() == 0 || args.len() == 1 {
 		SBool(true)
 	} else {
@@ -320,7 +320,7 @@ fn scm_op_gteq(env: &mut Env, mut args: List) -> SEle {
 		SBool(iter.all(|e| { let ret = last >= e; last = e; ret }))
 	}
 }
-fn scm_op_lt(env: &mut Env, mut args: List) -> SEle {
+fn scm_op_lt(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() == 0 || args.len() == 1 {
 		SBool(true)
 	} else {
@@ -334,7 +334,7 @@ fn scm_op_lt(env: &mut Env, mut args: List) -> SEle {
 		SBool(iter.all(|e| { let ret = last < e; last = e; ret }))
 	}
 }
-fn scm_op_lteq(env: &mut Env, mut args: List) -> SEle {
+fn scm_op_lteq(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() == 0 || args.len() == 1 {
 		SBool(true)
 	} else {
@@ -348,10 +348,10 @@ fn scm_op_lteq(env: &mut Env, mut args: List) -> SEle {
 		SBool(iter.all(|e| { let ret = last <= e; last = e; ret }))
 	}
 }
-fn scm_or(env: &mut Env, args: List) -> SEle {
+fn scm_or(env: &mut Env, args: ScmList) -> SEle {
 	SBool(args.into_iter().any(|e| env.elem_is_true(e)))
 }
-fn scm_push(env: &mut Env, mut args: List) -> SEle {
+fn scm_push(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() < 2 {
 		scheme_alert(ScmAlert::ArityMiss("push", args.len(),"<",2), &env.error_mode)
 	} else {
@@ -366,7 +366,7 @@ fn scm_push(env: &mut Env, mut args: List) -> SEle {
 		}
 	}
 }
-fn scm_quote(env: &mut Env, mut args: List) -> SEle {
+fn scm_quote(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() != 1 {
 		scheme_alert(ScmAlert::ArityMiss("quote", args.len(),"!=",1), &env.error_mode)
 	} else {
@@ -374,12 +374,12 @@ fn scm_quote(env: &mut Env, mut args: List) -> SEle {
 		match to_quote {
 			SBinding(b) => SSymbol(b),
 			SExpr(expr) => SList(expr.into_iter().map(|e| scm_quote(env,
-							List::with_head(e))).collect()),
+							list![e])).collect()),
 			_ => to_quote,
 		}
 	}
 }
-fn scm_remainder(env: &mut Env, mut args: List) -> SEle {
+fn scm_remainder(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() != 2 {
 		scheme_alert(ScmAlert::ArityMiss("remainder", args.len(),"!=",2), &env.error_mode)
 	} else {
@@ -395,7 +395,7 @@ fn scm_remainder(env: &mut Env, mut args: List) -> SEle {
 		}
 	}
 }
-fn scm_set_binding_to_value(env: &mut Env, mut args: List) -> SEle {
+fn scm_set_binding_to_value(env: &mut Env, mut args: ScmList) -> SEle {
 	if args.len() != 2 {
 		scheme_alert(ScmAlert::ArityMiss("set!", args.len(),"!=",2), &env.error_mode)
 	} else {
@@ -409,7 +409,7 @@ fn scm_set_binding_to_value(env: &mut Env, mut args: List) -> SEle {
 		}
 	}
 }
-fn scm_sub_iter(env: &mut Env, diff: f64, mut terms: List) -> f64 {
+fn scm_sub_iter(env: &mut Env, diff: f64, mut terms: ScmList) -> f64 {
 	if let Some(expr) = terms.pop_head() {
 		match env.eval(expr) {
 			SNum(x) => scm_sub_iter(env, diff - x, terms),
@@ -422,7 +422,7 @@ fn scm_sub_iter(env: &mut Env, diff: f64, mut terms: List) -> f64 {
 		diff
 	}
 }
-fn scm_sub(env: &mut Env, mut args: List) -> SEle {
+fn scm_sub(env: &mut Env, mut args: ScmList) -> SEle {
 	SNum(if let Some(expr) = args.pop_head() {
 		if let SNum(x) = env.eval(expr) {
 			scm_sub_iter(env, x, args)
@@ -434,7 +434,7 @@ fn scm_sub(env: &mut Env, mut args: List) -> SEle {
 	})
 }
 #[allow(unused_variables)]
-fn scm_var_stack(env: &mut Env, args: List) -> SEle {
+fn scm_var_stack(env: &mut Env, args: ScmList) -> SEle {
 	println!("var stack: {}", env.var_stack);
 	unit()
 }
