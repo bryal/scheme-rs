@@ -1,6 +1,6 @@
 use lib::{
 	List,
-	ScmList,
+	SEle,
 	scheme_alert};
 use lib::SEle::*;
 use lib::ScmAlert;
@@ -136,7 +136,7 @@ fn parse_bool(s: &str) -> Option<bool> {
 
 /// Takes a slice of separated symbols, each being a parenthesis, a bool literal, a numeric literal
 /// or whatever. These tokens are parsed into `SEle`'s so that they can be evaluated as expressions.
-pub fn parse_expressions(unparsed: &[&str]) -> ScmList {
+pub fn parse_expressions(unparsed: &[&str]) -> List<SEle> {
 	let mut parsed = list![];
 	let mut i = 0;
 	while i < unparsed.len() {

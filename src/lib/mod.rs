@@ -16,13 +16,10 @@ use self::SEle::*;
 pub mod scheme_stdlib;
 pub mod scm_macro;
 
-pub type ScmList = List<SEle>;
-
 pub enum ScmAlertMode {
 	Warn,
 	Error
 }
-
 impl fmt::Show for ScmAlertMode {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
@@ -31,7 +28,6 @@ impl fmt::Show for ScmAlertMode {
 		}
 	}
 }
-
 impl Copy for ScmAlertMode {}
 
 pub enum ScmAlert<'a> {
@@ -48,14 +44,15 @@ pub enum ScmAlert<'a> {
 pub fn scheme_alert(alert: ScmAlert, a_type: &ScmAlertMode) -> SEle {
 	match alert {
 		ScmAlert::Unexp(s) => println!("; {}: Unexpected `{}`", a_type, s),
-		ScmAlert::WrongType(exp, got) => println!("; {}: Wrong type. Expected `{}`, found `{}`",
-				a_type, exp, got),
+		ScmAlert::WrongType(exp, got) =>
+			println!("; {}: Wrong type. Expected `{}`, found `{}`", a_type, exp, got),
 		ScmAlert::Undef(s) => println!("; {}: Undefined variable `{}`", a_type, s),
 		ScmAlert::Bad(s) => println!("; {}: Bad {}", a_type, s),
-		ScmAlert::NaN(e) => println!("; {}: `{}: {}` is not a number", a_type, e.variant(), e),
+		ScmAlert::NaN(e) =>
+			println!("; {}: `{}: {}` is not a number", a_type, e.variant(), e),
 		ScmAlert::Unclosed => println!("; {}: Unclosed delimiter", a_type),
-		ScmAlert::ArityMiss(s, got, vs, exp) => println!("; {}: Arity missmatch in `{}`, {} {} {}",
-				a_type, s, got, vs, exp),
+		ScmAlert::ArityMiss(s, got,vs, exp) =>
+			println!("; {}: Arity missmatch in `{}`, {} {} {}", a_type, s, got,vs,exp),
 		ScmAlert::Custom(s) => println!("; {}: {}", a_type, s),
 	}
 	if let &ScmAlertMode::Error = a_type {
@@ -66,7 +63,6 @@ pub fn scheme_alert(alert: ScmAlert, a_type: &ScmAlertMode) -> SEle {
 
 type VarStack = Vec<(String, SEle)>;
 
-/// Returns empty list (Nil) if var is not on stack.
 fn get_var(stack: &mut VarStack, to_get: &str) -> Option<SEle> {
 	for &(ref binding, ref var) in stack.iter().rev() {
 		if *binding == to_get {
@@ -87,25 +83,21 @@ fn pop_var_defs(stack: &mut VarStack, n: uint) -> VarStack {
 pub struct Lambda {
 	binding: Option<String>,
 	arg_names: Vec<String>,
-	// Body is an s-expression as a `ScmList`.
-	body: ScmList,
+	body: SEle,
 	variadic: bool,
 	// Lambdas will capture variables by reference when in scope, but if the lambda is passed to
 	// a lower scope, or in case of Tail Calls, some vars will be captured by move/copy.
 	captured_var_stack: VarStack
 }
-
 impl Lambda {
-	pub fn new(arg_names: Vec<String>, body: ScmList) -> Lambda {
+	pub fn new(arg_names: Vec<String>, body: SEle) -> Lambda {
 		Lambda{binding: None, arg_names: arg_names, body: body, variadic: false,
 			captured_var_stack: vec![]}
 	}
-
-	pub fn new_variadic(arg_name: String, body: ScmList) -> Lambda {
+	pub fn new_variadic(arg_name: String, body: SEle) -> Lambda {
 		Lambda{binding: None, arg_names: vec![arg_name], body: body, variadic: true,
 			captured_var_stack: vec![]}
 	}
-
 	pub fn n_args(&self) -> uint {
 		self.arg_names.len()
 	}
@@ -117,14 +109,12 @@ pub enum LamOrFn {
 	Lam(Lambda),
 	Fn(&'static ScmFn)
 }
-
 // `fn`s does not, at least at the moment, implement `PartialEq`.
 impl PartialEq for LamOrFn {
 	fn eq(&self, other: &LamOrFn) -> bool {
-		match (self, other) {
-			(&LamOrFn::Lam(ref p1), &LamOrFn::Lam(ref p2)) => p1 == p2,
-			(_, _) => false
-		}
+		if let (&LamOrFn::Lam(ref p1), &LamOrFn::Lam(ref p2)) = (self, other) {
+			p1 == p2
+		} else { false }
 	}
 }
 
@@ -132,19 +122,18 @@ impl PartialEq for LamOrFn {
 #[derive(Clone, PartialEq)]
 #[allow(dead_code)]
 pub enum SEle {
-	SExpr(ScmList),
+	SExpr(List<SEle>),
 	SBinding(String),
 	SNum(f64),
 	SStr(String),
 	SSymbol(String),
 	SBool(bool),
-	SList(ScmList),
+	SList(List<SEle>),
 	// The SProc itself may optionally contain a name. This is applied in `apply_args` so that
 	// the procedure may call itself
 	// TODO: fix better solution than sometimes having a name.
 	SProc(Box<LamOrFn>)
 }
-
 impl SEle {
 	pub fn variant(&self) -> &'static str {
 		match self {
@@ -160,14 +149,14 @@ impl SEle {
 		}
 	}
 
-	fn into_expr(self) -> ScmList {
+	fn into_expr(self) -> List<SEle> {
 		if let SExpr(expr) = self {
 			expr
 		} else {
 			panic!("Element is not an expression. `{}`", self)
 		}
 	}
-	fn into_list(self) -> ScmList {
+	fn into_list(self) -> List<SEle> {
 		if let SList(list) = self {
 			list
 		} else {
@@ -182,11 +171,10 @@ impl SEle {
 		}
 	}
 }
-
 impl fmt::Show for SEle {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
-			SExpr(ref xs) | SList(ref xs) => write!(f, "({})", xs),
+			SExpr(ref xs) | SList(ref xs) => write!(f, "({})", xs.partial_fmt()),
 			SBinding(ref b) => write!(f, "{}", b),
 			SNum(n) => write!(f, "{}", n),
 			SStr(ref s) => write!(f, "\"{}\"", s),
@@ -205,7 +193,7 @@ pub fn unit() -> SEle {
 	SList(list![])
 }
 
-pub type ScmFn = fn(&mut Env, ScmList) -> SEle;
+pub type ScmFn = fn(&mut Env, List<SEle>) -> SEle;
 
 pub struct Env {
 	pub var_stack: VarStack,
@@ -213,7 +201,6 @@ pub struct Env {
 	// Useful when run in shell mode and stuff like undefined vars should not crash the session.
 	pub error_mode: ScmAlertMode
 }
-
 impl Env {
 	pub fn new(var_definitions: VarStack) -> Env {
 		Env {var_stack: var_definitions, error_mode: ScmAlertMode::Error }
@@ -228,9 +215,9 @@ impl Env {
 	}
 
 	/// Evaluate `val` and push it to either var stack of self, or optionally `maybe_stack`.
-	pub fn define_var(&mut self, binding: String, val: SEle, maybe_stack: Option<&mut VarStack>)
+	pub fn define_var(&mut self, binding: String, mut val: SEle, maybe_stack: Option<&mut VarStack>)
 	{
-		let val = self.eval(val);
+		val = self.eval(val);
 		let stack = if let Some(stack) = maybe_stack { stack } else { &mut self.var_stack };
 		stack.push((binding, val));
 	}
@@ -259,7 +246,8 @@ impl Env {
 
 	// Extract the procedure name and argument names for the `define` header `head`
 	// TODO: use scheme_alert instead of panic
-	pub fn dismantle_proc_head(&mut self, mut head: ScmList) -> (String, Vec<String>) {
+	// TODO: this is unnecesary, remove.
+	pub fn dismantle_proc_head(&mut self, mut head: List<SEle>) -> (String, Vec<String>) {
 		if let Some(SBinding(proc_name)) = head.pop_head() {
 			let var_names = head.into_iter().map(|e|
 					if let SBinding(var_bnd) = e {
@@ -277,7 +265,7 @@ impl Env {
 	// TODO: Fix to work with empty lists by remedying the `unwrap`
 	/// Evaluate the Scheme expression, assuming `expr` is a list of the expression body
 	/// starting with a procedure binding. May return binding.
-	fn eval_expr_lazy(&mut self, mut expr: ScmList) -> SEle {
+	fn eval_expr_lazy(&mut self, mut expr: List<SEle>) -> SEle {
 		match self.eval(expr.pop_head().unwrap()) {
 			SProc(box LamOrFn::Lam(lambda)) => self.run_lambda(lambda, expr),
 			SProc(box LamOrFn::Fn(func)) => (*func)(self, expr),
@@ -287,7 +275,7 @@ impl Env {
 	}
 
 	// Will not return binding
-	fn eval_expr_to_tail(&mut self, mut expr: ScmList) -> SEle {
+	fn eval_expr_to_tail(&mut self, mut expr: List<SEle>) -> SEle {
 		while let Some(_) = expr.head() {
 			let head = expr.head().unwrap().clone();
 			if let SBinding(proc_name) = head {
@@ -335,7 +323,7 @@ impl Env {
 		}
 	}
 
-	fn trampoline(&mut self, mut expr: ScmList) -> SEle {
+	fn trampoline(&mut self, mut expr: List<SEle>) -> SEle {
 		loop {
 			let evaled = {let tmp = self.eval_expr_lazy(expr); self.get_bound_elem(tmp)};
 			if let SExpr(mut inner_expr) = evaled {
@@ -353,7 +341,7 @@ impl Env {
 		}
 	}
 
-	fn eval_sequence_lazy(&mut self, exprs: ScmList) -> SEle {	
+	fn eval_sequence_lazy(&mut self, exprs: List<SEle>) -> SEle {	
 		if exprs != list![] {
 			let mut it = exprs.into_iter();
 			while let Some(elem) = it.next() {
@@ -367,13 +355,13 @@ impl Env {
 	}
 
 	// Evaluates the elements in `exprs` ins equence, returning the value of the last eval.
-	pub fn eval_sequence(&mut self, exprs: ScmList) -> SEle {
+	pub fn eval_sequence(&mut self, exprs: List<SEle>) -> SEle {
 		let last = self.eval_sequence_lazy(exprs);
 		self.eval(last)
 	}
 
-	// Evaluates all elements in `exprs` and collect into ScmList.
-	fn eval_multiple(&mut self, exprs: ScmList) -> ScmList {
+	// Evaluates all elements in `exprs` and collect into List<SEle>.
+	fn eval_multiple(&mut self, exprs: List<SEle>) -> List<SEle> {
 		exprs.into_iter().map(|e| self.eval(e)).collect()
 	}
 
@@ -390,20 +378,23 @@ impl Env {
 	}
 
 	/// Returns expression with evaled args.
-	pub fn apply_args(&mut self, mut expr: ScmList) -> ScmList {
-		let mut head = expr.pop_head().unwrap();
+	pub fn apply_args(&mut self, mut expr: List<SEle>) -> List<SEle> {
+		let head = expr.pop_head().unwrap();
+		// TODO: Name does not need to be applied with new TCE method. Instead, check binding for tail call in run_proc or something
 		if let SBinding(binding) = head.clone() {
 			// TODO: When define, lambda, etc. are macros to internal functions that
 			// work as expected when args are applied, remove following exceptions.
 			if ["define", "lambda"].contains(&binding.as_slice()) {
 				return List::with_body(head, expr);
-			} else if let SProc(box LamOrFn::Lam(mut lambda)) = self.eval(head.clone())
+			} /* else if let SProc(box LamOrFn::Lam(mut lambda)) = self.eval(head.clone())
 			{
 				// TODO: lambdas and procedures need unique names.
 				// vars can just prepend the callers name or something
-				lambda.binding = Some(binding);
+				// The name should be added before, i.e in the eval step, not when
+				// the lambda is returned, i.e. in here.
+				// lambda.binding = Some(binding);
 				head = SProc(box LamOrFn::Lam(lambda));
-			}
+			}*/
 		}
 		let evaled_args = self.eval_multiple(expr);
 		List::with_body(head, evaled_args)
@@ -422,7 +413,7 @@ impl Env {
 	// called or either a) closures won't be possible; or b) the stack will grow fuck fast.
 	// Maybe compare tail expression name. If same, apply args and return expression for
 	// trampolining. Else, eval the expression in current scope.
-	fn run_lambda(&mut self, mut lambda: Lambda, args: ScmList) -> SEle {
+	fn run_lambda(&mut self, mut lambda: Lambda, args: List<SEle>) -> SEle {
 		let previous_n_vars = self.var_stack.len();
 		let n_args = lambda.n_args();
 
@@ -448,10 +439,15 @@ impl Env {
 			}
 		}
 
-		let tail_elem = self.eval_expr_to_tail(lambda.body.clone());
+		let mut tail_elem = lambda.body.clone();
+		if let SExpr(lambda_expr) = tail_elem {
+			tail_elem = self.eval_expr_to_tail(lambda_expr);
+		}
 		let n_vars_in_block = self.var_stack.len() - previous_n_vars;
-
-		self.tail_elem_to_return(tail_elem, lambda, n_vars_in_block)
+		println!("t: {} {}", tail_elem.variant(), tail_elem);
+		let r = self.tail_elem_to_return(tail_elem, lambda, n_vars_in_block);
+		println!("r: {}", r);
+		r
 	}
 
 	// Takes the tail element of an expression and depending on the type of the element pop vars

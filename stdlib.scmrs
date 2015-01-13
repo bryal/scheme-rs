@@ -27,8 +27,8 @@
 (define-syntax option (None)
     ((_ None) (list #t '()))
     ((_ x)    (list #f x)))
-(define-syntax let (let)
-    ((let ((bindings values) ...) body ...)
+(define-syntax let ()
+    ((_ ((bindings values) ...) body ...)
      ((lambda (bindings ...) body ...) values ...)))
 
 ; Math

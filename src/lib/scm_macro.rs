@@ -3,7 +3,6 @@ use std::iter::repeat;
 use super::{
 	unit,
 	List,
-	ScmList,
 	SEle};
 use super::SEle::*;
 
@@ -11,16 +10,16 @@ use super::SEle::*;
 pub struct Transformer {
 	keywords: Vec<String>,
 	// Clauses of (pattern, template)
-	clauses: Vec<(ScmList, SEle)>,
+	clauses: Vec<(List<SEle>, SEle)>,
 }
 
 impl Transformer {
-	pub fn new(keywords: Vec<String>, clauses: Vec<(ScmList, SEle)>) -> Transformer {
+	pub fn new(keywords: Vec<String>, clauses: Vec<(List<SEle>, SEle)>) -> Transformer {
 		Transformer{keywords: keywords, clauses: clauses}
 	}
 }
 
-pub type FnMacro = fn(&mut PrecompileEnv, ScmList) -> SEle;
+pub type FnMacro = fn(&mut PrecompileEnv, List<SEle>) -> SEle;
 
 #[derive(Clone)]
 pub enum Macro {
@@ -51,7 +50,7 @@ impl PrecompileEnv {
 	  (with)
 	  ((_ x with y) (* x y)))
 	*/
-	fn define_syntax(&mut self, name: String, maybe_keywords: ScmList, clauses: ScmList) {
+	fn define_syntax(&mut self, name: String, maybe_keywords: List<SEle>, clauses: List<SEle>) {
 		let keywords = maybe_keywords.into_iter().map(|ele| {
 			if let SEle::SBinding(keyword) = ele { keyword }
 			else { panic!("`{}` is not a valid keyword.", ele) }}).collect();
@@ -71,7 +70,7 @@ impl PrecompileEnv {
 		self.macro_stack.push((name, Macro::Trans(Transformer::new(keywords,ret_clauses))));
 	}
 
-	fn expand_expr(&mut self, mut expr: ScmList) -> SEle {
+	fn expand_expr(&mut self, mut expr: List<SEle>) -> SEle {
 		if let Some(head) = expr.pop_head() {
 			let expanded_head = self.expand(head);
 			if let SBinding(head_binding) = expanded_head {
@@ -128,7 +127,7 @@ impl PrecompileEnv {
 
 /// Create variadic macro definitions for the elements in `elems_to_bind` based on the pattern
 /// `pattern_ele`.
-fn match_ellipsis(pattern_ele: &SEle, elems_to_bind: ScmList) -> Vec<(&str, SEle)> {
+fn match_ellipsis(pattern_ele: &SEle, elems_to_bind: List<SEle>) -> Vec<(&str, SEle)> {
 	if let &SBinding(ref binding) = pattern_ele {
 		// (a ...) for (x y z) => a = (x y z)
 		vec![(binding.as_slice(), SList(elems_to_bind))]
@@ -154,7 +153,7 @@ fn match_ellipsis(pattern_ele: &SEle, elems_to_bind: ScmList) -> Vec<(&str, SEle
 	}
 }
 
-fn bind_transform_pattern<'a>(expr: ScmList, pattern: &'a ScmList, keywords: &[String])
+fn bind_transform_pattern<'a>(expr: List<SEle>, pattern: &'a List<SEle>, keywords: &[String])
 	-> Option<Vec<(&'a str, SEle)>>
 {
 	let mut ret_stack = Vec::with_capacity(4);
@@ -231,7 +230,7 @@ fn apply_template(template: SEle, binding_stack: &Vec<(&str, SEle)>) -> SEle {
 }
 
 /// Transorm the expression according to pattern -> template of the transformer
-fn transform(expr: ScmList, transformer: &Transformer) -> SEle {
+fn transform(expr: List<SEle>, transformer: &Transformer) -> SEle {
 	for &(ref pattern, ref template) in transformer.clauses.iter() {
 		if let Some(&SBinding(ref last_ele)) = pattern.last_node().head() {
 			if *last_ele != "..." && pattern.len() != expr.len() {
