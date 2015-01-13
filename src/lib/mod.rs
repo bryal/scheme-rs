@@ -63,7 +63,16 @@ pub fn scheme_alert(alert: ScmAlert, a_type: &ScmAlertMode) -> SEle {
 
 type VarStack = Vec<(String, SEle)>;
 
-fn get_var(stack: &mut VarStack, to_get: &str) -> Option<SEle> {
+// fn var_exists(stack: &VarStack, to_get: &str) -> bool {
+// 	for &(ref binding, _) in stack.iter().rev() {
+// 		if *binding == to_get {
+// 			return true;
+// 		}
+// 	}
+// 	false
+// }
+
+fn get_var(stack: &VarStack, to_get: &str) -> Option<SEle> {
 	for &(ref binding, ref var) in stack.iter().rev() {
 		if *binding == to_get {
 			return Some(var.clone());
@@ -160,6 +169,13 @@ impl SEle {
 			list
 		} else {
 			panic!("Element is not a list. `{}`", self)
+		}
+	}
+	fn binding(&self) -> &String {
+		if let &SBinding(ref b) = self {
+			b
+		} else {
+			panic!("Element is not a binding. `{}`", self)
 		}
 	}
 	fn into_binding(self) -> String {
@@ -433,7 +449,8 @@ impl Env {
 			tail_elem = self.eval_expr_to_tail(lambda_expr);
 		}
 		let n_vars_in_block = self.var_stack.len() - previous_n_vars;
-		self.tail_elem_to_return(tail_elem, maybe_name, n_vars_in_block)
+		self.tail_elem_to_return(tail_elem, maybe_name, n_vars_in_block,
+			&lambda.captured_var_stack)
 	}
 
 	// Takes the tail element of an expression and depending on the type of the element pop vars
@@ -441,21 +458,29 @@ impl Env {
 	// return.
 	// TODO: this is an ugly method! REMEDY THIS!
 	fn tail_elem_to_return(&mut self, mut tail_elem: SEle, maybe_name: Option<String>,
-		n_vars_in_block: uint) -> SEle
+		n_vars_in_block: uint, caller_params: &VarStack) -> SEle
 	{
 		if let SExpr(tail_expr) = tail_elem {
-			let applied = self.apply_args(tail_expr);
+			let mut applied = self.apply_args(tail_expr);
 			// Tail Call Elimination
-			// If the name of the proc in tail == name of caller, it's a tail call
-			let is_tailcall = if let Some(&SBinding(ref tail_name)) = applied.head() {
+			// If the name of the proc in tail == name of caller, it's a tail call.
+			let same_name = if let Some(&SBinding(ref tail_name)) = applied.head() {
 					maybe_name.as_ref() == Some(tail_name)
 				} else { false };
-			if is_tailcall {
-				pop_var_defs(&mut self.var_stack, n_vars_in_block);
-				return SExpr(applied);
+			if same_name {
+				// Name can't come from local binding, e.g. callers parameters,
+				// because then there may be conflicting args in lambda body.
+				if let Some(new_head) = get_var(caller_params,
+					applied.head().unwrap().binding().as_slice())
+				{
+					*applied.head_mut().unwrap() = new_head;
+					tail_elem = self.eval(SExpr(applied));
+				} else {
+					tail_elem = SExpr(applied);
+				}
+			} else {
+				tail_elem = self.eval(SExpr(applied));
 			}
-			
-			tail_elem = self.eval(SExpr(applied));
 		}
 		if let SProc(box LamOrFn::Lam(ref mut lambda)) = tail_elem {
 			// Closure - Capture environment.

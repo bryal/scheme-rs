@@ -78,14 +78,14 @@
                 (if (and (> n to) (<= n from))
                     (option n)
                     (option None))))))
-(define (take n-to-take iterator1)
+(define (take n-to-take iterator)
     (lambda (i)
         (if (< i n-to-take)
-            (iterator1 i)
+            (iterator i)
             (option None))))
-(define (skip n-to-skip iterator2)
+(define (skip n-to-skip iterator)
     (lambda (i)
-        (iterator2 (+ i n-to-skip))))
+        (iterator (+ i n-to-skip))))
 (define (map iterator mapper)
     (lambda (i)
         (define current (iterator i))
@@ -109,13 +109,13 @@
                 (to-run (unwrap current))
                 (iter (1+ i)))))
     (iter 0))
-
 (define (for-list-as xs to-run)
     (if (eqv? xs '())
         null
         (begin
             (to-run (car xs))
             (for-list-as (cdr xs) to-run))))
+
 (define (fib n)
     (define (iter a b i)
         ;(var-stack)
