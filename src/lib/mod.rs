@@ -81,7 +81,6 @@ fn pop_var_defs(stack: &mut VarStack, n: uint) -> VarStack {
 
 #[derive(Clone, PartialEq)]
 pub struct Lambda {
-	binding: Option<String>,
 	arg_names: Vec<String>,
 	body: SEle,
 	variadic: bool,
@@ -91,11 +90,11 @@ pub struct Lambda {
 }
 impl Lambda {
 	pub fn new(arg_names: Vec<String>, body: SEle) -> Lambda {
-		Lambda{binding: None, arg_names: arg_names, body: body, variadic: false,
+		Lambda{arg_names: arg_names, body: body, variadic: false,
 			captured_var_stack: vec![]}
 	}
 	pub fn new_variadic(arg_name: String, body: SEle) -> Lambda {
-		Lambda{binding: None, arg_names: vec![arg_name], body: body, variadic: true,
+		Lambda{arg_names: vec![arg_name], body: body, variadic: true,
 			captured_var_stack: vec![]}
 	}
 	pub fn n_args(&self) -> uint {
@@ -180,10 +179,9 @@ impl fmt::Show for SEle {
 			SStr(ref s) => write!(f, "\"{}\"", s),
 			SSymbol(ref s) => write!(f, "{}", s),
 			SBool(b) => write!(f, "{}", if b {"#t"} else {"#f"}),
-			SProc(box LamOrFn::Lam(ref p)) => write!(f,
-				"#procedure:{} arity={}, captured={}",
-				if let Some(ref name) = p.binding { format!(" binding: {}", name) }
-				else { "".to_string() }, p.n_args(), p.captured_var_stack),
+			SProc(box LamOrFn::Lam(ref p)) =>
+				write!(f, "#procedure: arity={}, captured={}", p.n_args(),
+					p.captured_var_stack),
 			SProc(box LamOrFn::Fn(_)) => write!(f, "#procedure")
 		}
 	}
@@ -266,8 +264,11 @@ impl Env {
 	/// Evaluate the Scheme expression, assuming `expr` is a list of the expression body
 	/// starting with a procedure binding. May return binding.
 	fn eval_expr_lazy(&mut self, mut expr: List<SEle>) -> SEle {
+		let opt_name = if let &SBinding(ref name) = expr.head().unwrap() {
+				Some(name.clone())
+			} else { None };
 		match self.eval(expr.pop_head().unwrap()) {
-			SProc(box LamOrFn::Lam(lambda)) => self.run_lambda(lambda, expr),
+			SProc(box LamOrFn::Lam(lambda)) => self.run_lambda(lambda, opt_name, expr),
 			SProc(box LamOrFn::Fn(func)) => (*func)(self, expr),
 			x => scheme_alert(ScmAlert::WrongType("Procedure", x.variant()),
 				&self.error_mode)
@@ -380,24 +381,14 @@ impl Env {
 	/// Returns expression with evaled args.
 	pub fn apply_args(&mut self, mut expr: List<SEle>) -> List<SEle> {
 		let head = expr.pop_head().unwrap();
-		// TODO: Name does not need to be applied with new TCE method. Instead, check binding for tail call in run_proc or something
-		if let SBinding(binding) = head.clone() {
-			// TODO: When define, lambda, etc. are macros to internal functions that
-			// work as expected when args are applied, remove following exceptions.
-			if ["define", "lambda"].contains(&binding.as_slice()) {
-				return List::with_body(head, expr);
-			} /* else if let SProc(box LamOrFn::Lam(mut lambda)) = self.eval(head.clone())
-			{
-				// TODO: lambdas and procedures need unique names.
-				// vars can just prepend the callers name or something
-				// The name should be added before, i.e in the eval step, not when
-				// the lambda is returned, i.e. in here.
-				// lambda.binding = Some(binding);
-				head = SProc(box LamOrFn::Lam(lambda));
-			}*/
+		let is_exception = if let SBinding(ref binding) = head {
+				["define", "lambda"].contains(&binding.as_slice())
+			} else { false };
+		if is_exception {
+			List::with_body(head, expr)
+		} else {
+			List::with_body(head, self.eval_multiple(expr))
 		}
-		let evaled_args = self.eval_multiple(expr);
-		List::with_body(head, evaled_args)
 	}
 
 	// If the returned element is a lambda, or an expression with a user defined procedure as
@@ -413,15 +404,13 @@ impl Env {
 	// called or either a) closures won't be possible; or b) the stack will grow fuck fast.
 	// Maybe compare tail expression name. If same, apply args and return expression for
 	// trampolining. Else, eval the expression in current scope.
-	fn run_lambda(&mut self, mut lambda: Lambda, args: List<SEle>) -> SEle {
+	fn run_lambda(&mut self, mut lambda: Lambda, maybe_name: Option<String>, args: List<SEle>)
+		-> SEle
+	{
 		let previous_n_vars = self.var_stack.len();
 		let n_args = lambda.n_args();
 
 		// Define all the vars!
-		if let Some(ref lam_name) = lambda.binding {
-			self.define_var(lam_name.clone(), SProc(box LamOrFn::Lam(lambda.clone())),
-				None);
-		}
 		for var_def in lambda.captured_var_stack.iter() {
 			self.var_stack.push(var_def.clone());
 		}
@@ -444,54 +433,31 @@ impl Env {
 			tail_elem = self.eval_expr_to_tail(lambda_expr);
 		}
 		let n_vars_in_block = self.var_stack.len() - previous_n_vars;
-		println!("t: {} {}", tail_elem.variant(), tail_elem);
-		let r = self.tail_elem_to_return(tail_elem, lambda, n_vars_in_block);
-		println!("r: {}", r);
-		r
+		self.tail_elem_to_return(tail_elem, maybe_name, n_vars_in_block)
 	}
 
 	// Takes the tail element of an expression and depending on the type of the element pop vars
 	// and capture for lambdas etc. Return the final element that the calling procedure is to
 	// return.
-	fn tail_elem_to_return(&mut self, mut tail_elem: SEle, calling_lambda: Lambda,
+	// TODO: this is an ugly method! REMEDY THIS!
+	fn tail_elem_to_return(&mut self, mut tail_elem: SEle, maybe_name: Option<String>,
 		n_vars_in_block: uint) -> SEle
 	{
-		let maybe_name =
-			if let Some(ref name) = calling_lambda.binding { Some(name) } else { None };
 		if let SExpr(tail_expr) = tail_elem {
+			let applied = self.apply_args(tail_expr);
 			// Tail Call Elimination
-			let same_name = if let (Some(lambda_name), Some(head)) =
-					(maybe_name, tail_expr.head())
-				{
-					let head_binding = match head {
-						&SBinding(ref b) => Some(b),
-						&SProc(box LamOrFn::Lam(ref lambda)) =>
-							match lambda.binding {
-								Some(ref n) => Some(n), _ => None },
-						_ => None,
-					};
-					Some(lambda_name) == head_binding
+			// If the name of the proc in tail == name of caller, it's a tail call
+			let is_tailcall = if let Some(&SBinding(ref tail_name)) = applied.head() {
+					maybe_name.as_ref() == Some(tail_name)
 				} else { false };
-			// If the name of the proc in tail and the current lambda, it's a tail call
-			if same_name {
-				let applied = self.apply_args(tail_expr);
-				let result = SExpr(applied);
+			if is_tailcall {
 				pop_var_defs(&mut self.var_stack, n_vars_in_block);
-				return result;
+				return SExpr(applied);
 			}
-			let with_applied_args = SExpr(self.apply_args(tail_expr));
-			let mut evaled = self.eval(with_applied_args);
-			// FIXME, repetition right below
-			if let SProc(box LamOrFn::Lam(ref mut lambda)) = evaled {
-				// Closure - Capture environment.
-				let vars_from_block = pop_var_defs(&mut self.var_stack,
-					n_vars_in_block);
-				self.capture_vars_for_lambda(lambda, vars_from_block);
-			} else {
-				pop_var_defs(&mut self.var_stack, n_vars_in_block);
-			}
-			return evaled;
-		} else if let SProc(box LamOrFn::Lam(ref mut lambda)) = tail_elem {
+			
+			tail_elem = self.eval(SExpr(applied));
+		}
+		if let SProc(box LamOrFn::Lam(ref mut lambda)) = tail_elem {
 			// Closure - Capture environment.
 			let vars_from_block = pop_var_defs(&mut self.var_stack, n_vars_in_block);
 			self.capture_vars_for_lambda(lambda, vars_from_block);
