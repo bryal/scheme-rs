@@ -104,6 +104,34 @@ fn move_var(stack: &mut VarStack, to_get: &str) -> Result<SEle, String> {
 	}
 	return Err(format!("Variable `{}` is undefined.", to_get));
 }
+fn ref_var<'a>(stack: &'a VarStack, to_get: &str) -> Result<&'a SEle, String> {
+	for &(ref binding, ref var_in_stack) in stack.iter().rev() {
+		if *binding == to_get {
+			if let &Some(ref var) = var_in_stack {
+				return Ok(var);
+			} else {
+				return Err(format!("Variable `{}` has been moved.", to_get));
+			}
+		} else {
+			continue;
+		}
+	}
+	return Err(format!("Variable `{}` is undefined.", to_get));
+}
+fn ref_mut_var<'a>(stack: &'a mut VarStack, to_get: &str) -> Result<&'a mut SEle, String> {
+	for &(ref binding, ref mut var_in_stack) in stack.iter_mut().rev() {
+		if *binding == to_get {
+			if let &Some(ref mut var) = var_in_stack {
+				return Ok(var);
+			} else {
+				return Err(format!("Variable `{}` has been moved.", to_get));
+			}
+		} else {
+			continue;
+		}
+	}
+	return Err(format!("Variable `{}` is undefined.", to_get));
+}
 
 fn pop_var_defs(stack: &mut VarStack, n: uint) -> VarStack {
 	(0..cmp::min(n, stack.len())).map(|_| stack.pop().unwrap()).collect::<Vec<_>>()
@@ -250,11 +278,9 @@ impl Env {
 	}
 
 	/// Evaluate `val` and push it to either var stack of self, or optionally `maybe_stack`.
-	pub fn define_var(&mut self, binding: String, mut val: SEle, maybe_stack: Option<&mut VarStack>)
-	{
+	pub fn define_var(&mut self, binding: String, mut val: SEle) {
 		val = self.eval(val);
-		let stack = if let Some(stack) = maybe_stack { stack } else { &mut self.var_stack };
-		stack.push((binding, Some(val)));
+		self.var_stack.push((binding, Some(val)));
 	}
 
 	pub fn clone_var(&self, to_get: &str) -> SEle {
@@ -267,6 +293,21 @@ impl Env {
 		match move_var(&mut self.var_stack, to_get) {
 			Ok(result) => result,
 			Err(e) => scheme_alert(ScmAlert::Custom(e), &self.error_mode)
+		}
+	}
+	pub fn ref_var(&self, to_get: &str) -> &SEle {
+		match ref_var(&self.var_stack, to_get) {
+			Ok(result) => result,
+			Err(e) =>
+				// TODO: Try to improve this. Maybe return result?
+				{scheme_alert(ScmAlert::Custom(e), &ScmAlertMode::Error); panic!()}
+		}
+	}
+	pub fn ref_mut_var(&mut self, to_get: &str) -> &mut SEle {
+		match ref_mut_var(&mut self.var_stack, to_get) {
+			Ok(result) => result,
+			Err(e) =>
+				{scheme_alert(ScmAlert::Custom(e), &ScmAlertMode::Error); panic!()}
 		}
 	}
 
@@ -460,7 +501,7 @@ impl Env {
 			self.var_stack.push(var_def.clone());
 		}
 		if lambda.variadic {
-			self.define_var(lambda.arg_names.pop().unwrap(), SList(args), None);
+			self.define_var(lambda.arg_names.pop().unwrap(), SList(args));
 		} else {
 			if n_args != args.len() {
 				return scheme_alert(ScmAlert::ArityMiss("_",
@@ -469,7 +510,7 @@ impl Env {
 			for (var_name, var_val) in lambda.arg_names.clone().into_iter()
 				.zip(args.into_iter())
 			{
-				self.define_var(var_name, var_val, None);
+				self.define_var(var_name, var_val);
 			}
 		}
 

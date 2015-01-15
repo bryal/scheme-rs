@@ -143,7 +143,7 @@ pub fn scm_define(env: &mut Env, mut args: List<SEle>) -> SEle {
 					scheme_alert(ScmAlert::ArityMiss("define",
 						args.len(),"<",2), &env.error_mode);
 				} else {
-					env.define_var(binding, args.pop_head().unwrap(), None);
+					env.define_var(binding, args.pop_head().unwrap());
 				},
 			SExpr(head) => {
 				let body = if args.len() > 1 {
