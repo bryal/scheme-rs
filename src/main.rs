@@ -80,10 +80,10 @@ fn main(){
 	let (internal_std_procs, internal_std_vars) = scheme_stdlib::standard_library();
 	let mut vars = Vec::with_capacity(internal_std_vars.len());
 	for (name, val) in internal_std_vars.into_iter() {
-		vars.push((name.to_string(), val));
+		vars.push((name.to_string(), Some(val)));
 	}
 	for (name, func) in internal_std_procs.into_iter() {
-		vars.push((name.to_string(), SEle::SProc(box LamOrFn::Fn(func))));
+		vars.push((name.to_string(), Some(SEle::SProc(box LamOrFn::Fn(func)))));
 	}
 
 	let mut macro_env = PrecompileEnv::new();

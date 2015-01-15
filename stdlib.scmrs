@@ -1,16 +1,21 @@
 ; Standard library for scheme-rs
 
+; TODO: Doc comments and doc generation like Rust.
+
+; TODO: Not only ellipsis at end, also tail patterns: (a b ... c)
 (define-syntax if ()
     ((if condition consequence alternative)
      (cond (condition consequence)
            (else alternative)))
     ((if condition consequence)
-     (cond (condition consequence))))
-(define-syntax for (in)
-    ((for i in iterator expression)
-     (for-iterator iterator (lambda (i) expression)))
-    ((for list as element expression)
-     (for-list-as list (lambda (element) expression))))
+     (cond (condition consequence)
+           (else '()))))
+(define-syntax for (for)
+    ((for i iterator expression)
+     (for-iterator iterator (lambda (i) expression))))
+(define-syntax for-each (for-each)
+    ((for-each e list expression)
+     (for-list list (lambda (e) expression))))
 (define-syntax set! ()
     ((set! binding value)
      (set-binding-to-value (quote binding) value)))
@@ -29,7 +34,9 @@
     ((_ x)    (list #f x)))
 (define-syntax let ()
     ((_ ((bindings values) ...) body ...)
-     ((lambda (bindings ...) body ...) values ...)))
+     ((lambda (bindings ...) body ...) values ...))
+    ((_ () body ...)
+     ((lambda () body ...))))
 
 ; Math
 (define (halve x) (/ x 2))
@@ -86,18 +93,26 @@
 (define (skip n-to-skip iterator)
     (lambda (i)
         (iterator (+ i n-to-skip))))
+;; Example:
+;; ```
+;; (for e (map (range 0 5)
+;;             (lambda (i) (square i)))
+;;        (displayln e))
+;; ```
 (define (map iterator mapper)
     (lambda (i)
         (define current (iterator i))
         (if (some? current)
-            (mapper current)
+            (option (mapper (unwrap current)))
             (option None))))
 (define (collect iterator)
     (define (iter acc iterator i)
         (define current (iterator i))
-        (if (not current)
-            acc
-            (iter (push acc current) iterator (1+ i))))
+        (if (some? current)
+            (iter (prepend acc (unwrap current))
+                  iterator
+                  (1+ i))
+            acc))
     (iter '() iterator 0))
 
 (define (for-iterator iterator to-run)
@@ -109,12 +124,12 @@
                 (to-run (unwrap current))
                 (iter (1+ i)))))
     (iter 0))
-(define (for-list-as xs to-run)
+(define (for-list xs to-run)
     (if (eqv? xs '())
         null
         (begin
             (to-run (car xs))
-            (for-list-as (cdr xs) to-run))))
+            (for-list (cdr xs) to-run))))
 
 (define (fib n)
     (define (iter a b i)

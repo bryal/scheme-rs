@@ -132,6 +132,10 @@ fn match_ellipsis(pattern_ele: &SEle, elems_to_bind: List<SEle>) -> Vec<(&str, S
 		// (a ...) for (x y z) => a = (x y z)
 		vec![(binding.as_slice(), SList(elems_to_bind))]
 	} else if let &SExpr(ref pattern_list) = pattern_ele {
+		println!("elippeles: {}", elems_to_bind);
+		// if elems_to_bind.is_empty() {
+		// 	return None;
+		// }
 		// ((a b) ...) for ((x y) (z α)) => a = (x z) & b = (y α)
 		let mut bound_elems_lists = repeat(list![]).take(pattern_list.len())
 			.collect::<Vec<_>>();
@@ -149,13 +153,19 @@ fn match_ellipsis(pattern_ele: &SEle, elems_to_bind: List<SEle>) -> Vec<(&str, S
 					acc.extend(match_ellipsis(pattern_ele2, list).into_iter());
 					acc })
 	} else {
-		panic!("Invalid pattern.")
+		panic!("{} `{}` can not be matched as variadic.",
+			pattern_ele.variant(), pattern_ele)
 	}
 }
 
 fn bind_transform_pattern<'a>(expr: List<SEle>, pattern: &'a List<SEle>, keywords: &[String])
 	-> Option<Vec<(&'a str, SEle)>>
 {
+	if pattern.is_empty() {
+		return Some(vec![]);
+	} else if expr.is_empty()  { // TODO: .is_empty() for better performance
+		return None;
+	}
 	let mut ret_stack = Vec::with_capacity(4);
 	let (mut expr_it, mut pattern_it) = (expr.into_iter(), pattern.iter());
 	while let (Some(elem_to_bind), Some(pattern_ele)) = (expr_it.next(), pattern_it.next()) {
@@ -194,6 +204,7 @@ fn bind_transform_pattern<'a>(expr: List<SEle>, pattern: &'a List<SEle>, keyword
 	Some(ret_stack)
 }
 
+// Try to apply the vars in `binding_stack` to the expression `template`
 fn apply_template(template: SEle, binding_stack: &Vec<(&str, SEle)>) -> SEle {
 	if let SBinding(this_binding) = template {
 		for &(ref binding, ref bound) in binding_stack.iter() {
@@ -202,28 +213,29 @@ fn apply_template(template: SEle, binding_stack: &Vec<(&str, SEle)>) -> SEle {
 			}
 		}
 		SBinding(this_binding)
-	} else if let SExpr(expr) = template {
-		let mut list = list![];
-		let mut expr_it = expr.into_iter();
-		while let Some(e) = expr_it.next() {
-			if if let Some(&SBinding(ref maybe_ellipsis)) = expr_it.peek() {
+	} else if let SExpr(templ_expr) = template {
+		let mut applied = list![];
+		let mut templ_expr_it = templ_expr.into_iter();
+		while let Some(elem) = templ_expr_it.next() {
+			if if let Some(&SBinding(ref maybe_ellipsis)) = templ_expr_it.peek() {
 					*maybe_ellipsis == "..." } else { false }
 			{
-				let try_expand = apply_template(e, binding_stack);
+				// An element followed by an ellipsis in a template must be a
+				// variadic binding.
+				let try_expand = apply_template(elem, binding_stack);
 				if let SList(to_expand) = try_expand {
-					list.extend(to_expand.into_iter().map(|x|
+					applied.extend(to_expand.into_iter().map(|x|
 							apply_template(x, binding_stack)));
-					expr_it.next(); // Skip the ellipsis
+					templ_expr_it.next(); // Skip the ellipsis
 					continue;
 				} else {
-					panic!("Trying to expand something non expandable,\
-						`{}`, in macro.", try_expand)
+					panic!("NOOOOO")
 				}
 			} else {
-				list.push(apply_template(e, binding_stack));
+				applied.push(apply_template(elem, binding_stack));
 			}
 		}
-		SExpr(list)
+		SExpr(applied)
 	} else {
 		template
 	}
@@ -237,12 +249,9 @@ fn transform(expr: List<SEle>, transformer: &Transformer) -> SEle {
 				continue;
 			}
 		} else {
-			panic!("Pattern is empty");
+			panic!("Pattern in macro is empty.");
 		}
-		if let Some(bound_patterns_stack) =
-			// NOTE: expr.clone() should not be needed here? compiler bugg maybe.
-			// TODO
-			bind_transform_pattern(expr.clone(), pattern,
+		if let Some(bound_patterns_stack) = bind_transform_pattern(expr.clone(), pattern,
 				transformer.keywords.as_slice())
 		{
 			return apply_template(template.clone(), &bound_patterns_stack);

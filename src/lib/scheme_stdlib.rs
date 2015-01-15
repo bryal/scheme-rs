@@ -1,5 +1,6 @@
 use std::f64::consts::PI;
 use std::f64::NAN;
+use std::mem;
 
 use super::{
 	List,
@@ -31,17 +32,6 @@ fn scm_add(env: &mut Env, args: List<SEle>) -> SEle {
 }
 fn scm_and(env: &mut Env, args: List<SEle>) -> SEle {
 	SBool(args.into_iter().all(|e| env.elem_is_true(e)))
-}
-fn scm_append(env: &mut Env, args: List<SEle>) -> SEle {
-	let mut list = list![];
-	for maybe_list in args.into_iter() {
-		if let SList(mut other_list) = env.eval(maybe_list) {
-			list.last_link().swap_tail(&mut other_list).unwrap();
-		} else {
-			return scheme_alert(ScmAlert::WrongType("List", "_"), &env.error_mode);
-		}
-	}
-	SList(list)
 }
 /// Will return literal or expression with applied args, no bindings.
 fn scm_begin(env: &mut Env, args: List<SEle>) -> SEle {
@@ -82,6 +72,36 @@ fn scm_cdr(env: &mut Env, mut args: List<SEle>) -> SEle {
 		} else {
 			scheme_alert(ScmAlert::WrongType("List", evaled.variant()), &env.error_mode)
 		}
+	}
+}
+/// Prevents move of variable by cloning it.
+fn scm_clone(env: &mut Env, mut args: List<SEle>) -> SEle {
+	let n_args = args.len();
+	if n_args == 1 {
+		match args.pop_head() {
+			Some(SBinding(b)) => env.clone_var(b.as_slice()),
+			x => x.unwrap()
+		}
+	} else if n_args > 1 {
+		let cloned = list![]; // Will be unsafely mutated
+		{
+			let mut last = &cloned;
+			for arg in args.into_iter() {
+				let to_push = if let SBinding(b) = arg {
+						env.clone_var(b.as_slice())
+					} else {
+						arg
+					};
+				unsafe {
+					// Performance boost with long lists
+					let last_mut: &mut List<SEle> = mem::transmute(last);
+					last = last_mut.push(to_push)
+				}
+			}
+		}
+		SList(cloned)
+	} else {
+		scheme_alert(ScmAlert::ArityMiss("clone", args.len(),"<",1), &env.error_mode)
 	}
 }
 /// Will return any element or composite expression, including bindings.
@@ -179,13 +199,24 @@ fn scm_div(env: &mut Env, mut args: List<SEle>) -> SEle {
 	})
 }
 fn scm_eqv_q(env: &mut Env, mut args: List<SEle>) -> SEle {
-	if args.len() == 0 || args.len() == 1 {
+	if args.is_empty() || args.len() == 1 {
 		SBool(true)
 	} else {
 		args = env.eval_multiple(args);
 		let v1 = args.pop_head().unwrap();
 		SBool(args.into_iter().all(|v2| v1 == v2))
 	}
+}
+fn scm_join(env: &mut Env, args: List<SEle>) -> SEle {
+	let mut list = list![];
+	for maybe_list in args.into_iter() {
+		if let SList(mut other_list) = env.eval(maybe_list) {
+			list.last_link().swap_tail(&mut other_list).unwrap();
+		} else {
+			return scheme_alert(ScmAlert::WrongType("List", "_"), &env.error_mode);
+		}
+	}
+	SList(list)
 }
 fn scm_lambda(env: &mut Env, mut args: List<SEle>) -> SEle {
 	if args.len() < 2 {
@@ -272,7 +303,7 @@ fn scm_op_eq(env: &mut Env, mut args: List<SEle>) -> SEle {
 	}
 }
 fn scm_op_gt(env: &mut Env, mut args: List<SEle>) -> SEle {
-	if args.len() == 0 || args.len() == 1 {
+	if args.is_empty() || args.len() == 1 {
 		SBool(true)
 	} else {
 		args = env.eval_multiple(args);
@@ -286,7 +317,7 @@ fn scm_op_gt(env: &mut Env, mut args: List<SEle>) -> SEle {
 	}
 }
 fn scm_op_gteq(env: &mut Env, mut args: List<SEle>) -> SEle {
-	if args.len() == 0 || args.len() == 1 {
+	if args.is_empty() || args.len() == 1 {
 		SBool(true)
 	} else {
 		args = env.eval_multiple(args);
@@ -300,7 +331,7 @@ fn scm_op_gteq(env: &mut Env, mut args: List<SEle>) -> SEle {
 	}
 }
 fn scm_op_lt(env: &mut Env, mut args: List<SEle>) -> SEle {
-	if args.len() == 0 || args.len() == 1 {
+	if args.is_empty() || args.len() == 1 {
 		SBool(true)
 	} else {
 		args = env.eval_multiple(args);
@@ -314,7 +345,7 @@ fn scm_op_lt(env: &mut Env, mut args: List<SEle>) -> SEle {
 	}
 }
 fn scm_op_lteq(env: &mut Env, mut args: List<SEle>) -> SEle {
-	if args.len() == 0 || args.len() == 1 {
+	if args.is_empty() || args.len() == 1 {
 		SBool(true)
 	} else {
 		args = env.eval_multiple(args);
@@ -330,14 +361,43 @@ fn scm_op_lteq(env: &mut Env, mut args: List<SEle>) -> SEle {
 fn scm_or(env: &mut Env, args: List<SEle>) -> SEle {
 	SBool(args.into_iter().any(|e| env.elem_is_true(e)))
 }
-fn scm_push(env: &mut Env, mut args: List<SEle>) -> SEle {
+// Appends elements in tail to list in head. Moves list in head.
+fn scm_append(env: &mut Env, mut args: List<SEle>) -> SEle {
 	if args.len() < 2 {
-		scheme_alert(ScmAlert::ArityMiss("push", args.len(),"<",2), &env.error_mode)
+		scheme_alert(ScmAlert::ArityMiss("append", args.len(),"<",2), &env.error_mode)
 	} else {
-		match env.eval(args.pop_head().unwrap()) {
+		let head = args.pop_head().unwrap();
+		let list = if let SBinding(b) = head {
+				env.move_var(b.as_slice())
+			} else {
+				env.eval(head)
+			};
+		match list {
 			SList(mut list) => {
 				for e in args.into_iter().map(|e| env.eval(e)) {
 					list.push(e);
+				}
+				SList(list)
+			},
+			x => scheme_alert(ScmAlert::WrongType("List", x.variant()), &env.error_mode)
+		}
+	}
+}
+// Prepends elements in tail to list in head. Moves list in head.
+fn scm_prepend(env: &mut Env, mut args: List<SEle>) -> SEle {
+	if args.len() < 2 {
+		scheme_alert(ScmAlert::ArityMiss("prepend", args.len(),"<",2), &env.error_mode)
+	} else {
+		let head = args.pop_head().unwrap();
+		let list = if let SBinding(b) = head {
+				env.move_var(b.as_slice())
+			} else {
+				env.eval(head)
+			};
+		match list {
+			SList(mut list) => {
+				for e in args.into_iter().map(|e| env.eval(e)) {
+					list.prepush(e);
 				}
 				SList(list)
 			},
@@ -424,11 +484,13 @@ static P_SCM_APPEND: &'static ScmFn = &(scm_append as ScmFn);
 static P_SCM_BEGIN: &'static ScmFn = &(scm_begin as ScmFn);
 static P_SCM_CAR: &'static ScmFn = &(scm_car as ScmFn);
 static P_SCM_CDR: &'static ScmFn = &(scm_cdr as ScmFn);
+static P_SCM_CLONE: &'static ScmFn = &(scm_clone as ScmFn);
 static P_SCM_COND: &'static ScmFn = &(scm_cond as ScmFn);
 static P_SCM_DEFINE: &'static ScmFn = &(scm_define as ScmFn);
 static P_SCM_DISPLAY: &'static ScmFn = &(scm_display as ScmFn);
 static P_SCM_DIV: &'static ScmFn = &(scm_div as ScmFn);
 static P_SCM_EQV_Q: &'static ScmFn = &(scm_eqv_q as ScmFn);
+static P_SCM_JOIN: &'static ScmFn = &(scm_join as ScmFn);
 static P_SCM_LAMBDA: &'static ScmFn = &(scm_lambda as ScmFn);
 static P_SCM_LIST: &'static ScmFn = &(scm_list as ScmFn);
 static P_SCM_LIST_STAR: &'static ScmFn = &(scm_list_star as ScmFn);
@@ -442,7 +504,7 @@ static P_SCM_OP_GTEQ: &'static ScmFn = &(scm_op_gteq as ScmFn);
 static P_SCM_OP_LT: &'static ScmFn = &(scm_op_lt as ScmFn);
 static P_SCM_OP_LTEQ: &'static ScmFn = &(scm_op_lteq as ScmFn);
 static P_SCM_OR: &'static ScmFn = &(scm_or as ScmFn);
-static P_SCM_PUSH: &'static ScmFn = &(scm_push as ScmFn);
+static P_SCM_PREPEND: &'static ScmFn = &(scm_prepend as ScmFn);
 static P_SCM_QUOTE: &'static ScmFn = &(scm_quote as ScmFn);
 static P_SCM_REMAINDER: &'static ScmFn = &(scm_remainder as ScmFn);
 static P_SCM_SET_BINDING_TO_VALUE: &'static ScmFn = &(scm_set_binding_to_value as ScmFn);
@@ -459,11 +521,13 @@ pub fn standard_library() -> (Vec<(&'static str, &'static ScmFn)>, Vec<(&'static
 		("begin", P_SCM_BEGIN),
 		("car", P_SCM_CAR),
 		("cdr", P_SCM_CDR),
+		("clone", P_SCM_CLONE),
 		("cond", P_SCM_COND),
 		("define", P_SCM_DEFINE),
 		("display", P_SCM_DISPLAY),
 		("/", P_SCM_DIV),
 		("eqv?", P_SCM_EQV_Q),
+		("join", P_SCM_JOIN),
 		("lambda", P_SCM_LAMBDA),
 		("list", P_SCM_LIST),
 		("list*", P_SCM_LIST_STAR),
@@ -477,7 +541,7 @@ pub fn standard_library() -> (Vec<(&'static str, &'static ScmFn)>, Vec<(&'static
 		("<", P_SCM_OP_LT),
 		("<=", P_SCM_OP_LTEQ),
 		("or", P_SCM_OR),
-		("push", P_SCM_PUSH),
+		("prepend", P_SCM_PREPEND),
 		("quote", P_SCM_QUOTE),
 		("remainder", P_SCM_REMAINDER),
 		("set-binding-to-value", P_SCM_SET_BINDING_TO_VALUE),

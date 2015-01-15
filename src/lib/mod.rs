@@ -7,9 +7,12 @@
 // TODO: display line number on error
 // NOTE: Maybe change use of List to rusts own DList? Cleaner, and maybe better performance.
 // http://doc.rust-lang.org/std/collections/dlist/struct.DList.html
+// TODO: add tests
+// TODO: Add Reference variant to SEle. Make stuff work using references where possible.
 
 use std::fmt;
 use std::cmp;
+use std::mem;
 
 pub use super::linked_list::List;
 use self::SEle::*;
@@ -61,7 +64,8 @@ pub fn scheme_alert(alert: ScmAlert, a_type: &ScmAlertMode) -> SEle {
 	unit()
 }
 
-type VarStack = Vec<(String, SEle)>;
+// Option because values may be moved.
+type VarStack = Vec<(String, Option<SEle>)>;
 
 // fn var_exists(stack: &VarStack, to_get: &str) -> bool {
 // 	for &(ref binding, _) in stack.iter().rev() {
@@ -72,15 +76,33 @@ type VarStack = Vec<(String, SEle)>;
 // 	false
 // }
 
-fn get_var(stack: &VarStack, to_get: &str) -> Option<SEle> {
-	for &(ref binding, ref var) in stack.iter().rev() {
+fn clone_var(stack: &VarStack, to_get: &str) -> Result<SEle, String> {
+	for &(ref binding, ref maybe_moved) in stack.iter().rev() {
 		if *binding == to_get {
-			return Some(var.clone());
+			if let &Some(ref var) = maybe_moved {
+				return Ok(var.clone());
+			} else {
+				return Err(format!("Variable `{}` has been moved.", to_get));
+			}
 		} else {
 			continue;
 		}
 	}
-	None
+	return Err(format!("Variable `{}` is undefined.", to_get));
+}
+fn move_var(stack: &mut VarStack, to_get: &str) -> Result<SEle, String> {
+	for &(ref binding, ref mut var_in_stack) in stack.iter_mut().rev() {
+		if *binding == to_get {
+			if let Some(var) = mem::replace(var_in_stack, None) {
+				return Ok(var);
+			} else {
+				return Err(format!("Variable `{}` has been moved.", to_get));
+			}
+		} else {
+			continue;
+		}
+	}
+	return Err(format!("Variable `{}` is undefined.", to_get));
 }
 
 fn pop_var_defs(stack: &mut VarStack, n: uint) -> VarStack {
@@ -117,7 +139,6 @@ pub enum LamOrFn {
 	Lam(Lambda),
 	Fn(&'static ScmFn)
 }
-// `fn`s does not, at least at the moment, implement `PartialEq`.
 impl PartialEq for LamOrFn {
 	fn eq(&self, other: &LamOrFn) -> bool {
 		if let (&LamOrFn::Lam(ref p1), &LamOrFn::Lam(ref p2)) = (self, other) {
@@ -233,14 +254,19 @@ impl Env {
 	{
 		val = self.eval(val);
 		let stack = if let Some(stack) = maybe_stack { stack } else { &mut self.var_stack };
-		stack.push((binding, val));
+		stack.push((binding, Some(val)));
 	}
 
-	pub fn get_var(&mut self, to_get: &str) -> SEle {
-		if let Some(result) = get_var(&mut self.var_stack, to_get) {
-			result
-		} else {
-			scheme_alert(ScmAlert::Undef(to_get), &self.error_mode)
+	pub fn clone_var(&self, to_get: &str) -> SEle {
+		match clone_var(&self.var_stack, to_get) {
+			Ok(result) => result,
+			Err(e) => scheme_alert(ScmAlert::Custom(e), &self.error_mode)
+		}
+	}
+	pub fn move_var(&mut self, to_get: &str) -> SEle {
+		match move_var(&mut self.var_stack, to_get) {
+			Ok(result) => result,
+			Err(e) => scheme_alert(ScmAlert::Custom(e), &self.error_mode)
 		}
 	}
 
@@ -248,7 +274,8 @@ impl Env {
 		value = self.eval(value);
 		for &(ref binding, ref mut var) in self.var_stack.iter_mut().rev() {
 			if *binding == to_set {
-				*var = value;
+				// NOTE: Should moved values be settable?
+				*var = Some(value);
 				return true;
 			} else {
 				continue;
@@ -305,7 +332,7 @@ impl Env {
 						match evaled {
 							SExpr(x) => expr = x,
 							SBinding(b) => return
-								self.get_var(b.as_slice()),
+								self.clone_var(b.as_slice()),
 							_ => return evaled,
 						}
 					},
@@ -320,7 +347,7 @@ impl Env {
 
 	fn get_bound_elem(&mut self, ele: SEle) -> SEle {
 		match ele {
-			SBinding(b) => self.get_var(b.as_slice()),
+			SBinding(b) => self.clone_var(b.as_slice()),
 			_ => ele 
 		}
 	}
@@ -333,7 +360,7 @@ impl Env {
 				self.trampoline(x)	
 			},
 			SBinding(x) => {
-				let bound_ele = self.get_var(x.as_slice());
+				let bound_ele = self.clone_var(x.as_slice());
 				self.eval(bound_ele)
 			},
 			_ => ele
@@ -398,7 +425,9 @@ impl Env {
 	pub fn apply_args(&mut self, mut expr: List<SEle>) -> List<SEle> {
 		let head = expr.pop_head().unwrap();
 		let is_exception = if let SBinding(ref binding) = head {
-				["define", "lambda"].contains(&binding.as_slice())
+				// Exceptions where the application of args is not possible, even
+				// with macros.
+				["define", "lambda", "quote"].contains(&binding.as_slice())
 			} else { false };
 		if is_exception {
 			List::with_body(head, expr)
@@ -448,8 +477,7 @@ impl Env {
 		if let SExpr(lambda_expr) = tail_elem {
 			tail_elem = self.eval_expr_to_tail(lambda_expr);
 		}
-		let n_vars_in_block = self.var_stack.len() - previous_n_vars;
-		self.tail_elem_to_return(tail_elem, maybe_name, n_vars_in_block,
+		self.tail_elem_to_return(tail_elem, maybe_name, previous_n_vars,
 			&lambda.captured_var_stack)
 	}
 
@@ -458,7 +486,7 @@ impl Env {
 	// return.
 	// TODO: this is an ugly method! REMEDY THIS!
 	fn tail_elem_to_return(&mut self, mut tail_elem: SEle, maybe_name: Option<String>,
-		n_vars_in_block: uint, caller_params: &VarStack) -> SEle
+		previous_n_vars: uint, caller_params: &VarStack) -> SEle
 	{
 		if let SExpr(tail_expr) = tail_elem {
 			let mut applied = self.apply_args(tail_expr);
@@ -470,7 +498,7 @@ impl Env {
 			if same_name {
 				// Name can't come from local binding, e.g. callers parameters,
 				// because then there may be conflicting args in lambda body.
-				if let Some(new_head) = get_var(caller_params,
+				if let Ok(new_head) = clone_var(caller_params,
 					applied.head().unwrap().binding().as_slice())
 				{
 					*applied.head_mut().unwrap() = new_head;
@@ -482,6 +510,7 @@ impl Env {
 				tail_elem = self.eval(SExpr(applied));
 			}
 		}
+		let n_vars_in_block = self.var_stack.len() - previous_n_vars;
 		if let SProc(box LamOrFn::Lam(ref mut lambda)) = tail_elem {
 			// Closure - Capture environment.
 			let vars_from_block = pop_var_defs(&mut self.var_stack, n_vars_in_block);
