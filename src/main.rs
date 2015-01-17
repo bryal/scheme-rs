@@ -1,4 +1,5 @@
 #![feature(slicing_syntax)]
+#![feature(box_syntax)]
 
 extern crate getopts;
 #[macro_use]
@@ -54,7 +55,7 @@ fn interactive_shell(env: &mut Env, macro_env: &mut PrecompileEnv) {
 		rparen_surplus += right_paren_surplus(splitted.as_slice());
 		if rparen_surplus < 0 {
 			token_buf.push_all(to_strings(splitted.as_slice()).as_slice());
-			print!(">> {}", repeat(' ').take((rparen_surplus * -2) as uint)
+			print!(">> {}", repeat(' ').take((rparen_surplus * -2) as usize)
 					.collect::<String>());
 		} else if rparen_surplus > 0 {
 			scheme_alert(ScmAlert::Unexp(")"), &ScmAlertMode::Warn);
@@ -68,7 +69,7 @@ fn interactive_shell(env: &mut Env, macro_env: &mut PrecompileEnv) {
 					.collect();
 				let parsed_and_expanded = parse_expressions(strs.as_slice())
 					.into_iter().map(|e| macro_env.expand(e)).collect();
-				print!("{}\n>> ", env.eval_sequence(parsed_and_expanded));
+				print!("{:?}\n>> ", env.eval_sequence(parsed_and_expanded));
 			}
 			token_buf.clear();
 			rparen_surplus = 0;

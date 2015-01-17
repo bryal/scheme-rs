@@ -166,8 +166,8 @@ fn scm_display(env: &mut Env, mut args: List<SEle>) -> SEle {
 	if args.len() != 1 {
 		panic!("Arity missmatch")
 	}
-	print!("{}", env.eval(args.pop_head().expect(
-		"Could not retrieve argument")));
+	// TODO: fmt::String for user friendly textual representation
+	print!("{:?}", env.eval(args.pop_head().unwrap()));
 	unit()
 }
 fn scm_div_iter(env: &mut Env, numerator: f64, mut denoms: List<SEle>) -> f64 {
@@ -474,7 +474,7 @@ fn scm_sub(env: &mut Env, mut args: List<SEle>) -> SEle {
 }
 #[allow(unused_variables)]
 fn scm_var_stack(env: &mut Env, args: List<SEle>) -> SEle {
-	println!("var stack: {}", env.var_stack);
+	println!("var stack: {:?}", env.var_stack);
 	unit()
 }
 

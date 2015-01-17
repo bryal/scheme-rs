@@ -36,7 +36,7 @@ impl Copy for ScmAlertMode {}
 pub enum ScmAlert<'a> {
 	Unexp(&'a str),
 	WrongType(&'a str, &'a str),
-	ArityMiss(&'a str, uint, &'a str, uint),
+	ArityMiss(&'a str, usize, &'a str, usize),
 	Bad(&'a str),
 	Undef(&'a str),
 	NaN(SEle),
@@ -46,17 +46,17 @@ pub enum ScmAlert<'a> {
 
 pub fn scheme_alert(alert: ScmAlert, a_type: &ScmAlertMode) -> SEle {
 	match alert {
-		ScmAlert::Unexp(s) => println!("; {}: Unexpected `{}`", a_type, s),
+		ScmAlert::Unexp(s) => println!("; {:?}: Unexpected `{}`", a_type, s),
 		ScmAlert::WrongType(exp, got) =>
-			println!("; {}: Wrong type. Expected `{}`, found `{}`", a_type, exp, got),
-		ScmAlert::Undef(s) => println!("; {}: Undefined variable `{}`", a_type, s),
-		ScmAlert::Bad(s) => println!("; {}: Bad {}", a_type, s),
+			println!("; {:?}: Wrong type. Expected `{}`, found `{}`", a_type, exp, got),
+		ScmAlert::Undef(s) => println!("; {:?}: Undefined variable `{}`", a_type, s),
+		ScmAlert::Bad(s) => println!("; {:?}: Bad {}", a_type, s),
 		ScmAlert::NaN(e) =>
-			println!("; {}: `{}: {}` is not a number", a_type, e.variant(), e),
-		ScmAlert::Unclosed => println!("; {}: Unclosed delimiter", a_type),
+			println!("; {:?}: `{:?}: {}` is not a number", a_type, e, e.variant()),
+		ScmAlert::Unclosed => println!("; {:?}: Unclosed delimiter", a_type),
 		ScmAlert::ArityMiss(s, got,vs, exp) =>
-			println!("; {}: Arity missmatch in `{}`, {} {} {}", a_type, s, got,vs,exp),
-		ScmAlert::Custom(s) => println!("; {}: {}", a_type, s),
+			println!("; {:?}: Arity missmatch in `{}`, {} {} {}", a_type, s, got,vs,exp),
+		ScmAlert::Custom(s) => println!("; {:?}: {}", a_type, s),
 	}
 	if let &ScmAlertMode::Error = a_type {
 		panic!()
@@ -66,15 +66,6 @@ pub fn scheme_alert(alert: ScmAlert, a_type: &ScmAlertMode) -> SEle {
 
 // Option because values may be moved.
 type VarStack = Vec<(String, Option<SEle>)>;
-
-// fn var_exists(stack: &VarStack, to_get: &str) -> bool {
-// 	for &(ref binding, _) in stack.iter().rev() {
-// 		if *binding == to_get {
-// 			return true;
-// 		}
-// 	}
-// 	false
-// }
 
 fn clone_var(stack: &VarStack, to_get: &str) -> Result<SEle, String> {
 	for &(ref binding, ref maybe_moved) in stack.iter().rev() {
@@ -91,7 +82,7 @@ fn clone_var(stack: &VarStack, to_get: &str) -> Result<SEle, String> {
 	return Err(format!("Variable `{}` is undefined.", to_get));
 }
 fn move_var(stack: &mut VarStack, to_get: &str) -> Result<SEle, String> {
-	for &(ref binding, ref mut var_in_stack) in stack.iter_mut().rev() {
+	for &mut (ref binding, ref mut var_in_stack) in stack.iter_mut().rev() {
 		if *binding == to_get {
 			if let Some(var) = mem::replace(var_in_stack, None) {
 				return Ok(var);
@@ -119,9 +110,9 @@ fn ref_var<'a>(stack: &'a VarStack, to_get: &str) -> Result<&'a SEle, String> {
 	return Err(format!("Variable `{}` is undefined.", to_get));
 }
 fn ref_mut_var<'a>(stack: &'a mut VarStack, to_get: &str) -> Result<&'a mut SEle, String> {
-	for &(ref binding, ref mut var_in_stack) in stack.iter_mut().rev() {
+	for &mut (ref binding, ref mut var_in_stack) in stack.iter_mut().rev() {
 		if *binding == to_get {
-			if let &Some(ref mut var) = var_in_stack {
+			if let &mut Some(ref mut var) = var_in_stack {
 				return Ok(var);
 			} else {
 				return Err(format!("Variable `{}` has been moved.", to_get));
@@ -133,8 +124,8 @@ fn ref_mut_var<'a>(stack: &'a mut VarStack, to_get: &str) -> Result<&'a mut SEle
 	return Err(format!("Variable `{}` is undefined.", to_get));
 }
 
-fn pop_var_defs(stack: &mut VarStack, n: uint) -> VarStack {
-	(0..cmp::min(n, stack.len())).map(|_| stack.pop().unwrap()).collect::<Vec<_>>()
+fn pop_var_defs(stack: &mut VarStack, n_to_pop: usize) -> VarStack {
+	(0..cmp::min(n_to_pop, stack.len())).map(|_| stack.pop().unwrap()).collect::<Vec<_>>()
 		.into_iter().rev().collect()
 }
 
@@ -156,7 +147,7 @@ impl Lambda {
 		Lambda{arg_names: vec![arg_name], body: body, variadic: true,
 			captured_var_stack: vec![]}
 	}
-	pub fn n_args(&self) -> uint {
+	pub fn n_args(&self) -> usize {
 		self.arg_names.len()
 	}
 }
@@ -210,28 +201,28 @@ impl SEle {
 		if let SExpr(expr) = self {
 			expr
 		} else {
-			panic!("Element is not an expression. `{}`", self)
+			panic!("Element is not an expression. `{:?}`", self)
 		}
 	}
 	fn into_list(self) -> List<SEle> {
 		if let SList(list) = self {
 			list
 		} else {
-			panic!("Element is not a list. `{}`", self)
+			panic!("Element is not a list. `{:?}`", self)
 		}
 	}
 	fn binding(&self) -> &String {
 		if let &SBinding(ref b) = self {
 			b
 		} else {
-			panic!("Element is not a binding. `{}`", self)
+			panic!("Element is not a binding. `{:?}`", self)
 		}
 	}
 	fn into_binding(self) -> String {
 		if let SBinding(b) = self {
 			b
 		} else {
-			panic!("Element is not a binding. `{}`", self)
+			panic!("Element is not a binding. `{:?}`", self)
 		}
 	}
 }
@@ -245,7 +236,7 @@ impl fmt::Show for SEle {
 			SSymbol(ref s) => write!(f, "{}", s),
 			SBool(b) => write!(f, "{}", if b {"#t"} else {"#f"}),
 			SProc(box LamOrFn::Lam(ref p)) =>
-				write!(f, "#procedure: arity={}, captured={}", p.n_args(),
+				write!(f, "#procedure: arity={}, captured={:?}", p.n_args(),
 					p.captured_var_stack),
 			SProc(box LamOrFn::Fn(_)) => write!(f, "#procedure")
 		}
@@ -313,7 +304,7 @@ impl Env {
 
 	pub fn set_var(&mut self, to_set: &str, mut value: SEle) -> bool {
 		value = self.eval(value);
-		for &(ref binding, ref mut var) in self.var_stack.iter_mut().rev() {
+		for &mut(ref binding, ref mut var) in self.var_stack.iter_mut().rev() {
 			if *binding == to_set {
 				// NOTE: Should moved values be settable?
 				*var = Some(value);
@@ -335,12 +326,12 @@ impl Env {
 					if let SBinding(var_bnd) = e {
 						var_bnd
 					} else {
-						panic!("`{}` is not a binding", e)
+						panic!("`{:?}` is not a binding", e)
 					}
 				).collect();
 			(proc_name, var_names)
 		} else {
-			panic!("`{}` is not a valid procedure binding", head)
+			panic!("`{:?}` is not a valid procedure binding", head)
 		}
 	}
 
@@ -414,7 +405,7 @@ impl Env {
 			if let SExpr(mut inner_expr) = evaled {
 				// The proc in the expression might me an old lambda. Captured vars
 				// must be cleared.
-				if let Some(&SProc(box LamOrFn::Lam(ref mut lambda))) =
+				if let Some(&mut SProc(box LamOrFn::Lam(ref mut lambda))) =
 					inner_expr.head_mut()
 				{
 					lambda.captured_var_stack.clear();
@@ -527,7 +518,7 @@ impl Env {
 	// return.
 	// TODO: this is an ugly method! REMEDY THIS!
 	fn tail_elem_to_return(&mut self, mut tail_elem: SEle, maybe_name: Option<String>,
-		previous_n_vars: uint, caller_params: &VarStack) -> SEle
+		previous_n_vars: usize, caller_params: &VarStack) -> SEle
 	{
 		if let SExpr(tail_expr) = tail_elem {
 			let mut applied = self.apply_args(tail_expr);

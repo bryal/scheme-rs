@@ -53,12 +53,12 @@ impl PrecompileEnv {
 	fn define_syntax(&mut self, name: String, maybe_keywords: List<SEle>, clauses: List<SEle>) {
 		let keywords = maybe_keywords.into_iter().map(|ele| {
 			if let SEle::SBinding(keyword) = ele { keyword }
-			else { panic!("`{}` is not a valid keyword.", ele) }}).collect();
+			else { panic!("`{:?}` is not a valid keyword.", ele) }}).collect();
 		let mut ret_clauses = vec![];
 		for clause in clauses.into_iter() {
 			if let SExpr(mut rule) = clause {
 				if rule.len() != 2 {
-					panic!("Bad syntax rule. {} != 2. {}", rule.len(), rule)
+					panic!("Bad syntax rule. {:?} != 2. {:?}", rule.len(), rule)
 				}
 				if let (Some(SExpr(pattern)), Some(template)) =
 					(rule.pop_head(), rule.pop_head())
@@ -132,7 +132,7 @@ fn match_ellipsis(pattern_ele: &SEle, elems_to_bind: List<SEle>) -> Vec<(&str, S
 		// (a ...) for (x y z) => a = (x y z)
 		vec![(binding.as_slice(), SList(elems_to_bind))]
 	} else if let &SExpr(ref pattern_list) = pattern_ele {
-		println!("elippeles: {}", elems_to_bind);
+		println!("elippeles: {:?}", elems_to_bind);
 		// if elems_to_bind.is_empty() {
 		// 	return None;
 		// }
@@ -153,7 +153,7 @@ fn match_ellipsis(pattern_ele: &SEle, elems_to_bind: List<SEle>) -> Vec<(&str, S
 					acc.extend(match_ellipsis(pattern_ele2, list).into_iter());
 					acc })
 	} else {
-		panic!("{} `{}` can not be matched as variadic.",
+		panic!("{:?} `{:?}` can not be matched as variadic.",
 			pattern_ele.variant(), pattern_ele)
 	}
 }
@@ -257,7 +257,7 @@ fn transform(expr: List<SEle>, transformer: &Transformer) -> SEle {
 			return apply_template(template.clone(), &bound_patterns_stack);
 		}
 	}
-	panic!("The expression did not match any pattern in macro. `{}`", expr)
+	panic!("The expression did not match any pattern in macro. `{:?}`", expr)
 }
 
 pub fn expand_macros(ele: SEle) -> SEle {

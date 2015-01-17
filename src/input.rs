@@ -1,3 +1,5 @@
+#![allow(unstable)]
+
 use getopts::{optopt,optflag,getopts,OptGroup,usage};
 use std::os;
 use std::io::File;

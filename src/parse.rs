@@ -85,7 +85,7 @@ pub fn split_source_text(src: &str) -> Vec<&str> {
 
 /// Index the matching closing parenthesis in `v` for the opening parenthesis
 /// preceding the slice
-fn matching_paren(v: &[&str]) -> Option<uint> {
+fn matching_paren(v: &[&str]) -> Option<usize> {
 	let mut unclosed_parens: i32 = 0;
 	for (i,s) in v.iter().enumerate() {
 		if *s == ")" {
@@ -110,7 +110,7 @@ fn parse_number(s: &str) -> Option<f64> {
 
 fn parse_str_literal(s: &str) -> Option<&str> {
 	if s.starts_with("\"") && s.ends_with("\"") {
-		Some(s.slice(1, s.len()-1))
+		Some(&s[1..s.len()-1])
 	} else {
 		None
 	}
@@ -118,7 +118,7 @@ fn parse_str_literal(s: &str) -> Option<&str> {
 
 fn parse_symbol(s: &str) -> Option<&str> {
 	if s.starts_with("'") {
-		Some(s.slice_from(1))
+		Some(&s[1..])
 	} else {
 		None
 	}
@@ -142,8 +142,8 @@ pub fn parse_expressions(unparsed: &[&str]) -> List<SEle> {
 	while i < unparsed.len() {
 		let current_s = unparsed[i];
 		if current_s == "(" {
-			if let Some(matching_paren) = matching_paren(unparsed.slice_from(i+1)) {
-				let exprs_to_parse = unparsed.slice(i+1, i+1+matching_paren);
+			if let Some(matching_paren) = matching_paren(&unparsed[i+1..]) {
+				let exprs_to_parse = &unparsed[i+1..i+1+matching_paren];
 				parsed.push(SExpr(parse_expressions(exprs_to_parse)));
 				i = i+matching_paren+1;
 			} else {
@@ -151,8 +151,8 @@ pub fn parse_expressions(unparsed: &[&str]) -> List<SEle> {
 			}
 		} else if current_s == "'" && i+1 < unparsed.len() && unparsed[i+1] == "(" {
 			i += 1;
-			if let Some(matching_paren) = matching_paren(unparsed.slice_from(i+1)) {
-				let list_item_to_parse = unparsed.slice(i+1, i+1+matching_paren);
+			if let Some(matching_paren) = matching_paren(&unparsed[i+1..]) {
+				let list_item_to_parse = &unparsed[i+1..i+1+matching_paren];
 				let list = SExpr(parse_expressions(list_item_to_parse));
 				// TODO: add macro to create Lists similar to vec![]
 				let quoted = SExpr(list![SBinding("quote".to_string()), list]);

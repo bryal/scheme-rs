@@ -6,3 +6,6 @@ authors = ["bryal <96.bryal@gmail.com>"]
 
 [dependencies.linked_list]
 git = "https://github.com/bryal/linked_list-rs"
+
+[dependencies]
+getopts = "*"

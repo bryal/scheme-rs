@@ -1,4 +1,4 @@
 scheme-rs
 =========
 
-Play implementation of Scheme in Rust
+A play implementation of Lisp inspired by Scheme and Rust, in Rust.
