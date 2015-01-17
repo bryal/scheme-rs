@@ -129,6 +129,13 @@ fn pop_var_defs(stack: &mut VarStack, n_to_pop: usize) -> VarStack {
 		.into_iter().rev().collect()
 }
 
+pub type ScmFn = fn(&mut Env, List<SEle>) -> SEle;
+impl PartialEq for &'static ScmFn {
+	fn eq(&self, other: &Self) -> bool {
+		(*self) as *const ScmFn == (*other) as *const ScmFn
+	}
+}
+
 #[derive(Clone, PartialEq)]
 pub struct Lambda {
 	arg_names: Vec<String>,
@@ -160,9 +167,11 @@ pub enum LamOrFn {
 }
 impl PartialEq for LamOrFn {
 	fn eq(&self, other: &LamOrFn) -> bool {
-		if let (&LamOrFn::Lam(ref p1), &LamOrFn::Lam(ref p2)) = (self, other) {
-			p1 == p2
-		} else { false }
+		match (self, other) {
+			(&LamOrFn::Lam(ref p1), &LamOrFn::Lam(ref p2)) => p1 == p2,
+			(&LamOrFn::Fn(a), &LamOrFn::Fn(b)) => a == b,
+			_ => false
+		}
 	}
 }
 
@@ -246,8 +255,6 @@ impl fmt::Show for SEle {
 pub fn unit() -> SEle {
 	SList(list![])
 }
-
-pub type ScmFn = fn(&mut Env, List<SEle>) -> SEle;
 
 pub struct Env {
 	pub var_stack: VarStack,
