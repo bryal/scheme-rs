@@ -202,7 +202,7 @@ fn scm_eqv_q(env: &mut Env, mut args: List<SEle>) -> SEle {
 	if args.is_empty() || args.len() == 1 {
 		SBool(true)
 	} else {
-		let first = args.pop_head().unwrap();
+		let first =  env.eval(args.pop_head().unwrap());
 		SBool(args.into_iter().all(|e| env.eval(e) == first))
 	}
 }
