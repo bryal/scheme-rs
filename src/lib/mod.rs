@@ -373,7 +373,7 @@ impl Env {
 
 	// Will not return binding
 	fn eval_expr_to_tail(&mut self, mut expr: List<SEle>) -> SEle {
-		if let Some(_) = expr.head() {
+		while !expr.is_empty() {
 			let head = expr.pop_head().unwrap();
 			let has_tail_context = if let SBinding(ref proc_name) = head {
 					["cond", "begin"].contains(&proc_name.as_slice())
@@ -384,15 +384,15 @@ impl Env {
 				// Exceptions: Procedures that have tail contexts
 // (http://www.r6rs.org/final/html/r6rs/r6rs-Z-H-14.html#node_sec_11.20)
 				match self.eval_expr(List::with_body(head, expr)) {
-					SBinding(b) => self.clone_var(b.as_slice()),
-					evaled => evaled,
+					SExpr(x) => expr = x,
+					SBinding(b) => return self.clone_var(b.as_slice()),
+					atom => return atom,
 				}
 			} else {
-				SExpr(List::with_body(head, expr))
+				return SExpr(List::with_body(head, expr));
 			}
-		} else {
-			scheme_alert(ScmAlert::Bad("Expression"), &self.error_mode)
 		}
+		scheme_alert(ScmAlert::Bad("Expression"), &self.error_mode)
 	}
 
 	fn get_bound_elem(&mut self, ele: SEle) -> SEle {
