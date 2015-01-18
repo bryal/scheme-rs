@@ -338,6 +338,13 @@ impl Env {
 		}
 	}
 
+	fn clone_if_binding(&mut self, ele: SEle) -> SEle {
+		match ele {
+			SBinding(b) => self.clone_var(b.as_slice()),
+			_ => ele 
+		}
+	}
+
 	// Extract the procedure name and argument names for the `define` header `head`
 	// TODO: use scheme_alert instead of panic
 	// TODO: this is unnecesary, remove.
@@ -370,8 +377,8 @@ impl Env {
 			x => scheme_alert(ScmAlert::WrongType("Procedure", &x), &self.error_mode),
 		}
 	}
-
-	// Will not return binding
+	/// Evaluate to the expression in tail context 
+	/// http://www.r6rs.org/final/html/r6rs/r6rs-Z-H-14.html#node_sec_11.20
 	fn eval_expr_to_tail(&mut self, mut expr: List<SEle>) -> SEle {
 		while !expr.is_empty() {
 			let head = expr.pop_head().unwrap();
@@ -381,8 +388,7 @@ impl Env {
 					false
 				};
 			if has_tail_context {
-				// Exceptions: Procedures that have tail contexts
-// (http://www.r6rs.org/final/html/r6rs/r6rs-Z-H-14.html#node_sec_11.20)
+				
 				match self.eval_expr(List::with_body(head, expr)) {
 					SExpr(x) => expr = x,
 					SBinding(b) => return self.clone_var(b.as_slice()),
@@ -394,16 +400,8 @@ impl Env {
 		}
 		scheme_alert(ScmAlert::Bad("Expression"), &self.error_mode)
 	}
-
-	fn get_bound_elem(&mut self, ele: SEle) -> SEle {
-		match ele {
-			SBinding(b) => self.clone_var(b.as_slice()),
-			_ => ele 
-		}
-	}
-
-	// Get the value of the element. If it's an expression, get the evaluation. If it's a
-	// binding, get the associated value. If it's a value, return it.
+	// If it's an expression, get the evaluation. If it's a binding, get the associated value.
+	// If it's a value, return it.
 	pub fn eval(&mut self, ele: SEle) -> SEle {
 		match ele {
 			SExpr(x) => {
@@ -419,7 +417,7 @@ impl Env {
 
 	fn trampoline(&mut self, mut expr: List<SEle>) -> SEle {
 		loop {
-			let evaled = {let tmp = self.eval_expr(expr); self.get_bound_elem(tmp)};
+			let evaled = {let tmp = self.eval_expr(expr); self.clone_if_binding(tmp)};
 			if let SExpr(mut inner_expr) = evaled {
 				// The proc in the expression might me an old lambda. Captured vars
 				// must be cleared.
@@ -440,7 +438,7 @@ impl Env {
 			let mut it = exprs.into_iter();
 			while let Some(elem) = it.next() {
 				if it.peek() == None {
-					return self.get_bound_elem(elem);
+					return self.clone_if_binding(elem);
 				}
 				self.eval(elem);
 			}
@@ -460,7 +458,7 @@ impl Env {
 	}
 
 	pub fn elem_is_true(&mut self, mut ele: SEle) -> bool {
-		ele = self.get_bound_elem(ele);
+		ele = self.clone_if_binding(ele);
 		match ele {
 			SBool(b) => b,
 			SExpr(_) => {
