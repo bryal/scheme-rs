@@ -1,7 +1,7 @@
 use std::iter::repeat;
 
 use super::{
-	unit,
+	scm_nil,
 	List,
 	SEle};
 use super::SEle::*;
@@ -80,7 +80,7 @@ impl PrecompileEnv {
 						(expr.pop_head(), expr.pop_head(), expr)
 					{
 						self.define_syntax(name, keywords, clauses);
-						unit()
+						scm_nil()
 					} else {
 						panic!("Invalid `define-syntax`");
 					}

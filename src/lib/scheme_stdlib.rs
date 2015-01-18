@@ -11,7 +11,7 @@ use super::{
 	LamOrFn,
 	ScmAlert,
 	scheme_alert,
-	unit};
+	scm_nil};
 use super::SEle::*;
 
 // TODO: Concretely decide which functions/procedures will return what sort of values.
@@ -49,11 +49,11 @@ fn scm_car(env: &mut Env, mut args: List<SEle>) -> SEle {
 			if let Some(head) = list.pop_head() {
 				head
 			} else {
-				scheme_alert(ScmAlert::WrongType("List", "Empty List (Nil)"),
+				scheme_alert(ScmAlert::WrongType("List", &SList(list)),
 					&env.error_mode)
 			}
 		} else {
-			scheme_alert(ScmAlert::WrongType("List", evaled.variant()), &env.error_mode)
+			scheme_alert(ScmAlert::WrongType("List", &evaled), &env.error_mode)
 		}
 	}
 }
@@ -66,11 +66,11 @@ fn scm_cdr(env: &mut Env, mut args: List<SEle>) -> SEle {
 			if let Some(tail) = list.pop_tail() {
 				SList(tail)
 			} else {
-				scheme_alert(ScmAlert::WrongType("List", "Empty List (Nil)"),
+				scheme_alert(ScmAlert::WrongType("List", &SList(list)),
 					&env.error_mode)
 			}
 		} else {
-			scheme_alert(ScmAlert::WrongType("List", evaled.variant()), &env.error_mode)
+			scheme_alert(ScmAlert::WrongType("List", &evaled), &env.error_mode)
 		}
 	}
 }
@@ -129,7 +129,7 @@ fn scm_cond(env: &mut Env, args: List<SEle>) -> SEle {
 		}
 	}
 	// Disableable scheme alert about non-exhaustible pattern?
-	unit()
+	scm_nil()
 }
 // TODO: In case of defining expression to return lambda using the expressions args, lambda requires
 // associated var defs
@@ -159,7 +159,7 @@ pub fn scm_define(env: &mut Env, mut args: List<SEle>) -> SEle {
 			},
 			_ => {scheme_alert(ScmAlert::Bad("define body"), &env.error_mode);},
 		}
-		unit()
+		scm_nil()
 	}
 }
 fn scm_display(env: &mut Env, mut args: List<SEle>) -> SEle {
@@ -167,8 +167,8 @@ fn scm_display(env: &mut Env, mut args: List<SEle>) -> SEle {
 		panic!("Arity missmatch")
 	}
 	// TODO: fmt::String for user friendly textual representation
-	print!("{:?}", env.eval(args.pop_head().unwrap()));
-	unit()
+	print!("{}", env.eval(args.pop_head().unwrap()));
+	scm_nil()
 }
 fn scm_div_iter(env: &mut Env, numerator: f64, mut denoms: List<SEle>) -> f64 {
 	if let Some(expr) = denoms.pop_head() {
@@ -202,18 +202,17 @@ fn scm_eqv_q(env: &mut Env, mut args: List<SEle>) -> SEle {
 	if args.is_empty() || args.len() == 1 {
 		SBool(true)
 	} else {
-		args = env.eval_multiple(args);
-		let v1 = args.pop_head().unwrap();
-		SBool(args.into_iter().all(|v2| v1 == v2))
+		let first = args.pop_head().unwrap();
+		SBool(args.into_iter().all(|e| env.eval(e) == first))
 	}
 }
 fn scm_join(env: &mut Env, args: List<SEle>) -> SEle {
 	let mut list = list![];
 	for maybe_list in args.into_iter() {
-		if let SList(mut other_list) = env.eval(maybe_list) {
-			list.last_link().swap_tail(&mut other_list).unwrap();
-		} else {
-			return scheme_alert(ScmAlert::WrongType("List", "_"), &env.error_mode);
+		match env.eval(maybe_list) {
+			SList(mut other_list) =>
+				{ list.last_link().swap_tail(&mut other_list).unwrap(); },
+			e => return scheme_alert(ScmAlert::WrongType("List", &e), &env.error_mode)
 		}
 	}
 	SList(list)
@@ -278,7 +277,7 @@ fn scm_mul(env: &mut Env, args: List<SEle>) -> SEle {
 #[allow(unused_variables)]
 fn scm_newline(env: &mut Env, args: List<SEle>) -> SEle {
 	println!("");
-	unit()
+	scm_nil()
 }
 fn scm_not(env: &mut Env, mut args: List<SEle>) -> SEle {
 	if args.len() != 1 {
@@ -295,11 +294,22 @@ fn scm_number_q(env: &mut Env, mut args: List<SEle>) -> SEle {
 	}
 }
 fn scm_op_eq(env: &mut Env, mut args: List<SEle>) -> SEle {
-	args = env.eval_multiple(args);
-	if args.iter().all(|e| if let &SNum(_) = e { true } else { false }) {
-		scm_eqv_q(env, args)
+	if args.is_empty() || args.len() == 1 {
+		SBool(true)
 	} else {
-		scheme_alert(ScmAlert::WrongType("Number", "_"), &env.error_mode)
+		let first = env.eval(args.pop_head().unwrap());
+		if let SNum(v1) = first {
+			SBool(args.into_iter().all(|e| match env.eval(e) {
+						SNum(v2) => v2 == v1,
+						x => {
+							scheme_alert(ScmAlert::WrongType("Number",
+									&x), &env.error_mode);
+							false
+						}
+					}))
+		} else {
+			scheme_alert(ScmAlert::WrongType("Number", &first), &env.error_mode)
+		}
 	}
 }
 fn scm_op_gt(env: &mut Env, mut args: List<SEle>) -> SEle {
@@ -308,8 +318,7 @@ fn scm_op_gt(env: &mut Env, mut args: List<SEle>) -> SEle {
 	} else {
 		args = env.eval_multiple(args);
 		let mut iter = args.into_iter().map(|e| if let SNum(n) = e { n } else {
-				scheme_alert(ScmAlert::WrongType("Number", e.variant()),
-					&env.error_mode);
+				scheme_alert(ScmAlert::WrongType("Number", &e), &env.error_mode);
 				NAN
 			});
 		let mut last = iter.next().unwrap();
@@ -322,8 +331,7 @@ fn scm_op_gteq(env: &mut Env, mut args: List<SEle>) -> SEle {
 	} else {
 		args = env.eval_multiple(args);
 		let mut iter = args.into_iter().map(|e| if let SNum(n) = e { n } else {
-				scheme_alert(ScmAlert::WrongType("Number", e.variant()),
-					&env.error_mode);
+				scheme_alert(ScmAlert::WrongType("Number", &e), &env.error_mode);
 				NAN
 			});
 		let mut last = iter.next().unwrap();
@@ -336,8 +344,7 @@ fn scm_op_lt(env: &mut Env, mut args: List<SEle>) -> SEle {
 	} else {
 		args = env.eval_multiple(args);
 		let mut iter = args.into_iter().map(|e| if let SNum(n) = e { n } else {
-				scheme_alert(ScmAlert::WrongType("Number", e.variant()),
-					&env.error_mode);
+				scheme_alert(ScmAlert::WrongType("Number", &e), &env.error_mode);
 				NAN
 			});
 		let mut last = iter.next().unwrap();
@@ -350,8 +357,7 @@ fn scm_op_lteq(env: &mut Env, mut args: List<SEle>) -> SEle {
 	} else {
 		args = env.eval_multiple(args);
 		let mut iter = args.into_iter().map(|e| if let SNum(n) = e { n } else {
-				scheme_alert(ScmAlert::WrongType("Number", e.variant()),
-					&env.error_mode);
+				scheme_alert(ScmAlert::WrongType("Number", &e), &env.error_mode);
 				NAN
 			});
 		let mut last = iter.next().unwrap();
@@ -379,7 +385,7 @@ fn scm_append(env: &mut Env, mut args: List<SEle>) -> SEle {
 				}
 				SList(list)
 			},
-			x => scheme_alert(ScmAlert::WrongType("List", x.variant()), &env.error_mode)
+			x => scheme_alert(ScmAlert::WrongType("List", &x), &env.error_mode)
 		}
 	}
 }
@@ -401,7 +407,7 @@ fn scm_prepend(env: &mut Env, mut args: List<SEle>) -> SEle {
 				}
 				SList(list)
 			},
-			x => scheme_alert(ScmAlert::WrongType("List", x.variant()), &env.error_mode)
+			x => scheme_alert(ScmAlert::WrongType("List", &x), &env.error_mode)
 		}
 	}
 }
@@ -422,15 +428,13 @@ fn scm_remainder(env: &mut Env, mut args: List<SEle>) -> SEle {
 	if args.len() != 2 {
 		scheme_alert(ScmAlert::ArityMiss("remainder", args.len(),"!=",2), &env.error_mode)
 	} else {
-		let e1 = env.eval(args.pop_head().unwrap());
-		let e2 = env.eval(args.pop_head().unwrap());
-		match (e1, e2) {
-			(SNum(n1), SNum(n2)) => SNum(n1 % n2),
-			(t1, t2) => {
-				scheme_alert(ScmAlert::WrongType("Number, Number", format!("{}, {}",
-							t1.variant(), t2.variant()).as_slice()),
-					&env.error_mode)
-			}
+		match env.eval(args.pop_head().unwrap()) {
+			SNum(n1) => match env.eval(args.pop_head().unwrap()) {
+					SNum(n2) => SNum(n1 % n2),
+					x => scheme_alert(ScmAlert::WrongType("Number", &x),
+						&env.error_mode),
+				},
+			x => scheme_alert(ScmAlert::WrongType("Number", &x), &env.error_mode),
 		}
 	}
 }
@@ -442,7 +446,7 @@ fn scm_set_binding_to_value(env: &mut Env, mut args: List<SEle>) -> SEle {
 				args.pop_head().unwrap())
 		{
 			env.set_var(to_set.as_slice(), value);
-			unit()
+			scm_nil()
 		} else {
 			scheme_alert(ScmAlert::Bad("`set!`"), &env.error_mode)
 		}
@@ -475,7 +479,7 @@ fn scm_sub(env: &mut Env, mut args: List<SEle>) -> SEle {
 #[allow(unused_variables)]
 fn scm_var_stack(env: &mut Env, args: List<SEle>) -> SEle {
 	println!("var stack: {:?}", env.var_stack);
-	unit()
+	scm_nil()
 }
 
 static P_SCM_ADD: &'static ScmFn = &(scm_add as ScmFn);
@@ -551,7 +555,7 @@ pub fn standard_library() -> (Vec<(&'static str, &'static ScmFn)>, Vec<(&'static
 
 	let std_vars = vec![
 		("PI", SNum(PI)),
-		("null", unit()),
+		("null", scm_nil()),
 	];
 
 	(std_procs, std_vars)

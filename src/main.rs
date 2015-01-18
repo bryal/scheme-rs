@@ -69,7 +69,7 @@ fn interactive_shell(env: &mut Env, macro_env: &mut PrecompileEnv) {
 					.collect();
 				let parsed_and_expanded = parse_expressions(strs.as_slice())
 					.into_iter().map(|e| macro_env.expand(e)).collect();
-				print!("{:?}\n>> ", env.eval_sequence(parsed_and_expanded));
+				print!("{}\n>> ", env.eval_sequence(parsed_and_expanded));
 			}
 			token_buf.clear();
 			rparen_surplus = 0;

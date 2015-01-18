@@ -9,6 +9,8 @@
 // http://doc.rust-lang.org/std/collections/dlist/struct.DList.html
 // TODO: add tests
 // TODO: Add Reference variant to SEle. Make stuff work using references where possible.
+// TODO: Find out when exactly an expression might lack a head.
+// TODO: Fix procedures having to be copied everytime an expression is evaluated.
 
 use std::fmt;
 use std::cmp;
@@ -35,7 +37,7 @@ impl Copy for ScmAlertMode {}
 
 pub enum ScmAlert<'a> {
 	Unexp(&'a str),
-	WrongType(&'a str, &'a str),
+	WrongType(&'a str, &'a SEle),
 	ArityMiss(&'a str, usize, &'a str, usize),
 	Bad(&'a str),
 	Undef(&'a str),
@@ -48,11 +50,12 @@ pub fn scheme_alert(alert: ScmAlert, a_type: &ScmAlertMode) -> SEle {
 	match alert {
 		ScmAlert::Unexp(s) => println!("; {:?}: Unexpected `{}`", a_type, s),
 		ScmAlert::WrongType(exp, got) =>
-			println!("; {:?}: Wrong type. Expected `{}`, found `{}`", a_type, exp, got),
+			println!("; {:?}: Wrong type. Expected `{}`, found `{}: {}`", a_type, exp,
+				got, got.variant()),
 		ScmAlert::Undef(s) => println!("; {:?}: Undefined variable `{}`", a_type, s),
 		ScmAlert::Bad(s) => println!("; {:?}: Bad {}", a_type, s),
 		ScmAlert::NaN(e) =>
-			println!("; {:?}: `{:?}: {}` is not a number", a_type, e, e.variant()),
+			println!("; {:?}: `{}: {}` is not a number", a_type, e, e.variant()),
 		ScmAlert::Unclosed => println!("; {:?}: Unclosed delimiter", a_type),
 		ScmAlert::ArityMiss(s, got,vs, exp) =>
 			println!("; {:?}: Arity missmatch in `{}`, {} {} {}", a_type, s, got,vs,exp),
@@ -61,7 +64,7 @@ pub fn scheme_alert(alert: ScmAlert, a_type: &ScmAlertMode) -> SEle {
 	if let &ScmAlertMode::Error = a_type {
 		panic!()
 	}
-	unit()
+	scm_nil()
 }
 
 // Option because values may be moved.
@@ -154,6 +157,7 @@ impl Lambda {
 		Lambda{arg_names: vec![arg_name], body: body, variadic: true,
 			captured_var_stack: vec![]}
 	}
+
 	pub fn n_args(&self) -> usize {
 		self.arg_names.len()
 	}
@@ -186,9 +190,6 @@ pub enum SEle {
 	SSymbol(String),
 	SBool(bool),
 	SList(List<SEle>),
-	// The SProc itself may optionally contain a name. This is applied in `apply_args` so that
-	// the procedure may call itself
-	// TODO: fix better solution than sometimes having a name.
 	SProc(Box<LamOrFn>)
 }
 impl SEle {
@@ -210,32 +211,32 @@ impl SEle {
 		if let SExpr(expr) = self {
 			expr
 		} else {
-			panic!("Element is not an expression. `{:?}`", self)
+			panic!("Element is not an expression. `{}`", self)
 		}
 	}
 	fn into_list(self) -> List<SEle> {
 		if let SList(list) = self {
 			list
 		} else {
-			panic!("Element is not a list. `{:?}`", self)
+			panic!("Element is not a list. `{}`", self)
 		}
 	}
 	fn binding(&self) -> &String {
 		if let &SBinding(ref b) = self {
 			b
 		} else {
-			panic!("Element is not a binding. `{:?}`", self)
+			panic!("Element is not a binding. `{}`", self)
 		}
 	}
 	fn into_binding(self) -> String {
 		if let SBinding(b) = self {
 			b
 		} else {
-			panic!("Element is not a binding. `{:?}`", self)
+			panic!("Element is not a binding. `{}`", self)
 		}
 	}
 }
-impl fmt::Show for SEle {
+impl fmt::String for SEle {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
 			SExpr(ref xs) | SList(ref xs) => write!(f, "({})", xs.partial_fmt()),
@@ -251,26 +252,40 @@ impl fmt::Show for SEle {
 		}
 	}
 }
+impl fmt::Show for SEle {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match *self {
+			SExpr(ref xs) => write!(f, "({})", xs.partial_fmt()),
+			SList(ref xs) => write!(f, "[{}]", xs.partial_fmt()),
+			SBinding(ref b) => write!(f, "{:?}", b),
+			SNum(n) => write!(f, "{:?}", n),
+			SStr(ref s) => write!(f, "\"{:?}\"", s),
+			SSymbol(ref s) => write!(f, "{:?}", s),
+			SBool(b) => write!(f, "{:?}", b),
+			SProc(box LamOrFn::Lam(ref p)) =>
+				write!(f, "#procedure: arity={}, captured={:?}", p.n_args(),
+					p.captured_var_stack),
+			SProc(box LamOrFn::Fn(_)) => write!(f, "#procedure")
+		}
+	}
+}
 
-pub fn unit() -> SEle {
+pub fn scm_nil() -> SEle {
 	SList(list![])
 }
 
 pub struct Env {
 	pub var_stack: VarStack,
-	// When the `error_mode` is set to `Warn`, all errors are reported as warnings.
-	// Useful when run in shell mode and stuff like undefined vars should not crash the session.
+	// Error => Panic, Warn => Proceed as if nothing happened. In REPL, this is set to Warn.
 	pub error_mode: ScmAlertMode
 }
 impl Env {
 	pub fn new(var_definitions: VarStack) -> Env {
 		Env {var_stack: var_definitions, error_mode: ScmAlertMode::Error }
 	}
-
 	pub fn make_strict(&mut self) {
 		self.error_mode = ScmAlertMode::Error
 	}
-
 	pub fn make_lenient(&mut self) {
 		self.error_mode = ScmAlertMode::Warn
 	}
@@ -279,6 +294,20 @@ impl Env {
 	pub fn define_var(&mut self, binding: String, mut val: SEle) {
 		val = self.eval(val);
 		self.var_stack.push((binding, Some(val)));
+	}
+	pub fn set_var(&mut self, to_set: &str, mut value: SEle) -> bool {
+		value = self.eval(value);
+		for &mut(ref binding, ref mut var) in self.var_stack.iter_mut().rev() {
+			if *binding == to_set {
+				// NOTE: Should moved values be settable?
+				*var = Some(value);
+				return true;
+			} else {
+				continue;
+			}
+		}
+		scheme_alert(ScmAlert::Undef(to_set), &self.error_mode);
+		false
 	}
 
 	pub fn clone_var(&self, to_get: &str) -> SEle {
@@ -309,21 +338,6 @@ impl Env {
 		}
 	}
 
-	pub fn set_var(&mut self, to_set: &str, mut value: SEle) -> bool {
-		value = self.eval(value);
-		for &mut(ref binding, ref mut var) in self.var_stack.iter_mut().rev() {
-			if *binding == to_set {
-				// NOTE: Should moved values be settable?
-				*var = Some(value);
-				return true;
-			} else {
-				continue;
-			}
-		}
-		scheme_alert(ScmAlert::Undef(to_set), &self.error_mode);
-		false
-	}
-
 	// Extract the procedure name and argument names for the `define` header `head`
 	// TODO: use scheme_alert instead of panic
 	// TODO: this is unnecesary, remove.
@@ -333,7 +347,7 @@ impl Env {
 					if let SBinding(var_bnd) = e {
 						var_bnd
 					} else {
-						panic!("`{:?}` is not a binding", e)
+						panic!("`{}` is not a binding", e)
 					}
 				).collect();
 			(proc_name, var_names)
@@ -344,44 +358,41 @@ impl Env {
 
 	// TODO: Fix to work with empty lists by remedying the `unwrap`
 	/// Evaluate the Scheme expression, assuming `expr` is a list of the expression body
-	/// starting with a procedure binding. May return binding.
-	fn eval_expr_lazy(&mut self, mut expr: List<SEle>) -> SEle {
-		let opt_name = if let &SBinding(ref name) = expr.head().unwrap() {
-				Some(name.clone())
-			} else { None };
-		match self.eval(expr.pop_head().unwrap()) {
+	/// starting with a procedure binding. Will return expression in case of tail call.
+	fn eval_expr(&mut self, mut expr: List<SEle>) -> SEle {
+		let (head_val, opt_name) = match expr.pop_head().unwrap() {
+				SBinding(bnd) => (self.clone_var(bnd.as_slice()), Some(bnd)),
+				e => (e, None)
+			};
+		match head_val {
 			SProc(box LamOrFn::Lam(lambda)) => self.run_lambda(lambda, opt_name, expr),
 			SProc(box LamOrFn::Fn(func)) => (*func)(self, expr),
-			x => scheme_alert(ScmAlert::WrongType("Procedure", x.variant()),
-				&self.error_mode)
+			x => scheme_alert(ScmAlert::WrongType("Procedure", &x), &self.error_mode),
 		}
 	}
 
 	// Will not return binding
 	fn eval_expr_to_tail(&mut self, mut expr: List<SEle>) -> SEle {
-		while let Some(_) = expr.head() {
-			let head = expr.head().unwrap().clone();
-			if let SBinding(proc_name) = head {
-				match proc_name.as_slice() {
-					// Exceptions: Procedures that have tail contexts (http://www.r6rs.org/final/html/r6rs/r6rs-Z-H-14.html#node_sec_11.20)
-					// and procedures where the arguments should not be applied,
-					// but rather sent directly to the function.
-					"cond" | "begin" => {
-						let evaled = self.eval_expr_lazy(expr);
-						match evaled {
-							SExpr(x) => expr = x,
-							SBinding(b) => return
-								self.clone_var(b.as_slice()),
-							_ => return evaled,
-						}
-					},
-					_ => return SExpr(expr),
+		if let Some(_) = expr.head() {
+			let head = expr.pop_head().unwrap();
+			let has_tail_context = if let SBinding(ref proc_name) = head {
+					["cond", "begin"].contains(&proc_name.as_slice())
+				} else {
+					false
+				};
+			if has_tail_context {
+				// Exceptions: Procedures that have tail contexts
+// (http://www.r6rs.org/final/html/r6rs/r6rs-Z-H-14.html#node_sec_11.20)
+				match self.eval_expr(List::with_body(head, expr)) {
+					SBinding(b) => self.clone_var(b.as_slice()),
+					evaled => evaled,
 				}
 			} else {
-				return SExpr(expr);
+				SExpr(List::with_body(head, expr))
 			}
+		} else {
+			scheme_alert(ScmAlert::Bad("Expression"), &self.error_mode)
 		}
-		scheme_alert(ScmAlert::Bad("Expression"), &self.error_mode)
 	}
 
 	fn get_bound_elem(&mut self, ele: SEle) -> SEle {
@@ -408,7 +419,7 @@ impl Env {
 
 	fn trampoline(&mut self, mut expr: List<SEle>) -> SEle {
 		loop {
-			let evaled = {let tmp = self.eval_expr_lazy(expr); self.get_bound_elem(tmp)};
+			let evaled = {let tmp = self.eval_expr(expr); self.get_bound_elem(tmp)};
 			if let SExpr(mut inner_expr) = evaled {
 				// The proc in the expression might me an old lambda. Captured vars
 				// must be cleared.
@@ -434,7 +445,7 @@ impl Env {
 				self.eval(elem);
 			}
 		}
-		unit()
+		scm_nil()
 	}
 
 	// Evaluates the elements in `exprs` ins equence, returning the value of the last eval.
