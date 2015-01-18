@@ -278,6 +278,7 @@ pub struct Env {
 	pub var_stack: VarStack,
 	// Error => Panic, Warn => Proceed as if nothing happened. In REPL, this is set to Warn.
 	pub error_mode: ScmAlertMode
+	// TODO: Add vars to track current proc and current line number
 }
 impl Env {
 	pub fn new(var_definitions: VarStack) -> Env {
@@ -344,6 +345,12 @@ impl Env {
 			_ => ele 
 		}
 	}
+	fn move_if_binding(&mut self, ele: SEle) -> SEle {
+		match ele {
+			SBinding(b) => self.move_var(b.as_slice()),
+			_ => ele 
+		}
+	}
 
 	// Extract the procedure name and argument names for the `define` header `head`
 	// TODO: use scheme_alert instead of panic
@@ -369,7 +376,7 @@ impl Env {
 	fn eval_expr(&mut self, mut expr: List<SEle>) -> SEle {
 		let (head_val, opt_name) = match expr.pop_head().unwrap() {
 				SBinding(bnd) => (self.clone_var(bnd.as_slice()), Some(bnd)),
-				e => (e, None)
+				e => (self.eval(e), None)
 			};
 		match head_val {
 			SProc(box LamOrFn::Lam(lambda)) => self.run_lambda(lambda, opt_name, expr),
@@ -400,7 +407,25 @@ impl Env {
 		}
 		scheme_alert(ScmAlert::Bad("Expression"), &self.error_mode)
 	}
-	// If it's an expression, get the evaluation. If it's a binding, get the associated value.
+	/// Evaluates `expr` in thunks until an atom is reached.
+	fn trampoline(&mut self, mut expr: List<SEle>) -> SEle {
+		loop {
+			match {let tmp = self.eval_expr(expr); self.clone_if_binding(tmp)} {
+				SExpr(mut inner_expr) => {
+					// The proc in the expression might be an old lambda.
+					// Captured vars must be cleared.
+					if let Some(&mut SProc(box LamOrFn::Lam(ref mut lambda))) =
+						inner_expr.head_mut()
+					{
+						lambda.captured_var_stack.clear();
+					}
+					expr = inner_expr;
+				},
+				atom => return atom,
+			}
+		}
+	}
+	// If it's an expression, get the evaluation. If it's a binding, clone the associated value.
 	// If it's a value, return it.
 	pub fn eval(&mut self, ele: SEle) -> SEle {
 		match ele {
@@ -414,25 +439,6 @@ impl Env {
 			_ => ele
 		}
 	}
-
-	fn trampoline(&mut self, mut expr: List<SEle>) -> SEle {
-		loop {
-			let evaled = {let tmp = self.eval_expr(expr); self.clone_if_binding(tmp)};
-			if let SExpr(mut inner_expr) = evaled {
-				// The proc in the expression might me an old lambda. Captured vars
-				// must be cleared.
-				if let Some(&mut SProc(box LamOrFn::Lam(ref mut lambda))) =
-					inner_expr.head_mut()
-				{
-					lambda.captured_var_stack.clear();
-				}
-				expr = inner_expr;
-			} else {
-				return evaled;
-			}
-		}
-	}
-
 	fn eval_sequence_lazy(&mut self, exprs: List<SEle>) -> SEle {	
 		if exprs != list![] {
 			let mut it = exprs.into_iter();
@@ -445,13 +451,11 @@ impl Env {
 		}
 		scm_nil()
 	}
-
 	// Evaluates the elements in `exprs` ins equence, returning the value of the last eval.
 	pub fn eval_sequence(&mut self, exprs: List<SEle>) -> SEle {
 		let last = self.eval_sequence_lazy(exprs);
 		self.eval(last)
 	}
-
 	// Evaluates all elements in `exprs` and collect into List<SEle>.
 	fn eval_multiple(&mut self, exprs: List<SEle>) -> List<SEle> {
 		exprs.into_iter().map(|e| self.eval(e)).collect()
@@ -521,7 +525,7 @@ impl Env {
 			}
 		}
 
-		let mut tail_elem = lambda.body.clone();
+		let mut tail_elem = self.clone_if_binding(lambda.body.clone());
 		if let SExpr(lambda_expr) = tail_elem {
 			tail_elem = self.eval_expr_to_tail(lambda_expr);
 		}
