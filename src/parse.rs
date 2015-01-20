@@ -1,3 +1,6 @@
+use std::mem;
+use std::fmt;
+
 use lib::{
 	List,
 	SEle,
@@ -6,16 +9,39 @@ use lib::SEle::*;
 use lib::ScmAlert;
 use lib::ScmAlertMode;
 
-enum Token {
+#[derive(PartialEq)]
+pub enum Token {
 	OpenParen,
 	CloseParen,
 	Quote,
 	Octothorpe,
 	StrLit(String),
-	Ident(&str), // Any non-delim char sequence not in a string
+	Ident(String), // Any non-delim char sequence not in a string
+}
+impl fmt::Show for Token {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match *self {
+			Token::OpenParen => write!(f, "("),
+			Token::CloseParen => write!(f, ")"),
+			Token::Quote => write!(f, "'"),
+			Token::Octothorpe => write!(f, "#"),
+			Token::StrLit(ref s) => write!(f, "\"{}\"", s),
+			Token::Ident(ref s) => write!(f, "{}", s),
+		}
+	}
 }
 
 // TODO: Raw string literal. Maybe R"delim(raw text)delim"
+
+static DELIMITERS: [char; 13] = [' ', '\t', ';', '"', '\'', '`', '|', '(', ')', '[', ']', '{', '}'];
+
+fn iterator_travel_n<T: Iterator>(it: &mut T, n: usize) {
+	for _ in (0..n) {
+		if let None = it.next() {
+			break;
+		}
+	}
+}
 
 fn char_is_number(c: char) -> bool {
 	match c {
@@ -38,30 +64,47 @@ fn escape_raw_str(s: &str) -> String {
 	String::from_utf8(v).unwrap()
 }
 
-struct Parser {
+fn str_lit_exit(s: &str) -> Option<usize> {
+	s.find_str("\"")
+}
+fn raw_str_lit_exit(s: &str) -> Option<usize> {
+	s.find_str(")_\"")
+}
+fn ident_exit(s: &str) -> usize {
+	s.chars().take_while(|c| !DELIMITERS.contains(c)).count()
+}
+
+pub struct Tokenizer {
 	in_str_lit: bool,
 	in_raw_str_lit: bool,
 	comp_str_start_line: usize,
-	comp_str_lit: String
+	comp_str_lit: String,
 }
-impl Parser {
-	fn get_rest_of_str_lit(&self, src_line: &str) -> (Option<usize>, &str) {
-		let p = if self.in_str_lit {
+impl Tokenizer {
+	pub fn new() -> Tokenizer {
+		Tokenizer{
+			in_str_lit: false,
+			in_raw_str_lit: false,
+			comp_str_start_line: 0,
+			comp_str_lit: String::with_capacity(6) }
+	}
+
+	fn get_rest_of_str_lit<'a>(&self, src_line: &'a str) -> (Option<usize>, &'a str) {
+		let maybe_p = if self.in_str_lit {
 				str_lit_exit(src_line)
 			} else {
 				raw_str_lit_exit(src_line)
 			};
-		if p == 0 {
-			(None, line_src[0..])
+		if let Some(p) = maybe_p {
+			(Some(p), &src_line[0..p])
 		} else {
-			(Some(p), line_src[0..p])
+			(None, &src_line[0..])
 		}
 	}
 
-	fn match_chars_to_tokens(&mut self, src_line: &str) -> Vec<Token> {
-		let mut tokens = Vec::with_capacity(3);
+	fn match_chars_to_tokens(&mut self, src_line: &str, mut tokens: Vec<Token>) -> Vec<Token> {
 		let mut char_iter = src_line.char_indices();
-		while let (i, c) = char_iter.next() {
+		while let Some((i, c)) = char_iter.next() {
 			match c {
 				';' => break,
 				' ' | '\t' => continue,
@@ -69,36 +112,37 @@ impl Parser {
 				')' => tokens.push(Token::CloseParen),
 				'\'' => tokens.push(Token::Quote),
 				// '#' => tokens.push(Token::Octothorpe),
-				'"' => match str_lit_exit(src_line[i+1..]) {
+				'"' => match str_lit_exit(&src_line[i+1..]) {
 					None => {
-						self.comp_str_lit = line_src[i+1..].to_string();
+						self.comp_str_lit = src_line[i+1..].to_string();
 						self.in_str_lit = true;
 						break
 					},
-					Some(p) => {
+					Some(str_len) => {
 						tokens.push(Token::StrLit(
-								line_src[i+1..p].to_string()));
-						char_iter = src_line[p+1..].char_indices();
+							src_line[i+1..i+1+str_len].to_string()));
+						iterator_travel_n(&mut char_iter, str_len+1);
 					}
 				},
-				'R' if src_line[i+1..i+4] == "\"_(" =>
-					match raw_str_lit_exit(src_line[i+4..])
+				'R' if &src_line[i+1..i+4] == "\"_(" =>
+					match raw_str_lit_exit(&src_line[i+4..])
 				{
 					None => {
-						self.comp_st_rlit = line_src[i..].to_string();
+						self.comp_str_lit = src_line[i..].to_string();
 						self.in_str_lit = true;
-						break
+						break;
 					},
-					Some(p) => {
-						tokens.push(Token::StrLit(
-							escape_raw_str(line_src[i+4..p])));
-						char_iter = src_line[p+4..].char_indices();
+					Some(str_len) => {
+						tokens.push(Token::StrLit(escape_raw_str(
+							&src_line[i+4..i+4+str_len])));
+						iterator_travel_n(&mut char_iter, str_len+6);
 					}
 				},
 				x => {
-					let p = ident_exit(src_line, i);
-					tokens.push(Token::Ident(line_src[i..p]));
-					char_iter = src_line[p+1..].char_indices();
+					let ident_len = ident_exit(&src_line[i..]);
+					tokens.push(Token::Ident(
+						src_line[i..i+ident_len].to_string()));
+					iterator_travel_n(&mut char_iter, ident_len-1);
 				}
 			}
 		}
@@ -106,32 +150,36 @@ impl Parser {
 	}
 
 	fn tokenize_line(&mut self, mut src_line: &str) -> Option<Vec<Token>> {
-		if in_str_lit || in_raw_str_lit {
+		let mut tokens = Vec::with_capacity(3);
+
+		// Handle multi line string
+		if self.in_str_lit || self.in_raw_str_lit {
 			let (maybe_end, s) = self.get_rest_of_str_lit(src_line);
-			self.comp_str_lit.push(s);
+			self.comp_str_lit.push_str(s);
 			if let Some(end_pos) = maybe_end {
-				if end_pos == (src_line.len()-1) {
-					return None;
-				}
-				src_line = src_line[i+1..].trim_left();
+				let str_lit = mem::replace(&mut self.comp_str_lit,
+					String::with_capacity(6));
+				tokens.push(Token::StrLit(str_lit));
+				src_line = src_line[end_pos+1..].trim_left();
 			} else {
 				return None;
 			}
 		}
 
-		Some(self.match_chars_to_tokens(src_line))
+		Some(self.match_chars_to_tokens(src_line, tokens))
 	}
 	pub fn tokenize_source(&mut self, src: &str) -> Vec<(usize, Vec<Token>)> {
 		let mut ret_lines = Vec::with_capacity(src.len() / 40);
 
-		for (line_n, src_line) in src.lines().map(|l| l.trim()).enumerate()
-			.filter(|(_, l)| !l.is_empty() && !l.begins_with(';'))
+		for (line_n, src_line) in src.lines().enumerate().map(|(n, l)| (n+1, l.trim()))
+			.filter(|&(_, l)| !l.is_empty() && !l.starts_with(";"))
 		{
 			let maybe_tokenized = self.tokenize_line(src_line);
 			if let Some(tokenized) = maybe_tokenized {
 				if self.in_str_lit || self.in_raw_str_lit {
-					(self.in_str_lit, self.in_raw_str_lit) = (false, false);
-					ret_lines.push((comp_str_start_line, tokenized))
+					self.in_str_lit = false;
+					self.in_raw_str_lit = false;
+					ret_lines.push((self.comp_str_start_line, tokenized))
 				} else {
 					ret_lines.push((line_n, tokenized))
 				}
@@ -146,10 +194,10 @@ impl Parser {
 
 /// Index the matching closing parenthesis in `v` for the opening parenthesis
 /// preceding the slice
-fn matching_paren(v: &[Token]) -> Option<usize> {
+fn matching_paren(ts: &[(usize, Token)]) -> Option<usize> {
 	let mut unclosed_parens: i32 = 0;
-	for (i, t) in v.iter().enumerate() {
-		match t {
+	for (i, t) in ts.iter().enumerate() {
+		match t.1 {
 			Token::CloseParen => if unclosed_parens == 0 {
 					return Some(i)
 				} else {
@@ -162,9 +210,6 @@ fn matching_paren(v: &[Token]) -> Option<usize> {
 	None
 }
 
-fn parse_number(s: &str) -> Option<f64> {
-	s.replace("_", "").parse()
-}
 fn parse_bool(s: &str) -> Option<bool> {
 	match s {
 		"#t" => Some(true),
@@ -172,18 +217,22 @@ fn parse_bool(s: &str) -> Option<bool> {
 		_ => None
 	}
 }
+fn parse_number(s: &str) -> Option<f64> {
+	s.replace("_", "").parse()
+}
 fn parse_binding(s: &str) -> Option<String> {
 	Some(s.to_string())
 }
 
 
 /// Tokens are parsed to `SEle`'s so that they can be evaluated as expressions.
-pub fn parse_tokens(unparsed: &[(usize, Token)]) -> List<SEle> {
+fn parse_tokens(unparsed: &[(usize, Token)]) -> List<SEle> {
 	let mut parsed = list![];
 	let mut i = 0;
 	let unparsed_len = unparsed.len();
 	while i < unparsed_len {
-		let (line_n, current_token) = unparsed[i];
+		// TODO: fix line numbering
+		let (line_n, ref current_token) = unparsed[i];
 		match *current_token {
 			Token::OpenParen =>
 				if let Some(mp) = matching_paren(&unparsed[i+1..]) {
@@ -193,7 +242,8 @@ pub fn parse_tokens(unparsed: &[(usize, Token)]) -> List<SEle> {
 					scheme_alert(ScmAlert::Unclosed(line_n),
 						&ScmAlertMode::Error);
 				},
-			Token::Quote if unparsed[i+1] == Token::OpenParen && i+1 < unparsed_len => {
+			Token::Quote if i+1 < unparsed_len && unparsed[i+1].1 == Token::OpenParen =>
+				{
 					i += 1;
 					if let Some(mp) = matching_paren(&unparsed[i+1..]) {
 						let expr = list![
@@ -207,21 +257,30 @@ pub fn parse_tokens(unparsed: &[(usize, Token)]) -> List<SEle> {
 							&ScmAlertMode::Error);
 					}
 				},
-			Token::Quote => if let Token::Ident(s) = unparsed[i+1] {
-					parsed.push(SSymbol(s.to_string()));
+			Token::Quote => if let Token::Ident(ref s) = unparsed[i+1].1 {
+					parsed.push(SSymbol(s.clone()));
 					i += 1;
 				},
-			StrLit(ref s) => parsed.push(SBinding(s.clone())),
-			Ident(s) => if let Some(f) = parse_number(s) {
-					parsed.push(SNum(f));
-				} else if let Some(b) = parse_bool(s) {
+			Token::StrLit(ref s) => {parsed.push(SBinding(s.clone()));},
+			Token::Ident(ref s) => if let Some(b) = parse_bool(s.as_slice()) {
 					parsed.push(SBool(b));
+				} else if let Some(f) = parse_number(s.as_slice()) {
+					parsed.push(SNum(f));
 				} else {
-					parsed.push(SBinding(s.to_string()));
+					parsed.push(SBinding(s.clone()));
 				},
 			_ => ()
 		}
 		i += 1;
 	}
 	parsed
+}
+
+pub fn parse_token_lines(unparsed: Vec<(usize, Vec<Token>)>) -> List<SEle> {
+	let aprox_new_len = unparsed.len() * 5;
+	let lined_tokens = unparsed.into_iter().fold(Vec::with_capacity(aprox_new_len),
+		|mut acc, (line_n, tokens)| {
+			acc.extend(tokens.into_iter().map(|t| (line_n, t)));
+			acc });
+	parse_tokens(lined_tokens.as_slice())
 }
