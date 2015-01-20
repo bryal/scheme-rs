@@ -6,171 +6,220 @@ use lib::SEle::*;
 use lib::ScmAlert;
 use lib::ScmAlertMode;
 
-pub fn split_source_text(src: &str) -> Vec<&str> {
-	let mut ss = Vec::with_capacity(src.len() / 4);
-	let mut start_pos = 0;
-	let (mut in_string, mut in_escape, mut in_comment) = (false, false, false);
-	let mut in_space = true;
-	let mut char_iter = src.char_indices();
-	loop {
-		// Manual iteration in case we have to skip an iteration sometime
-		let (i, c) = match char_iter.next() {
-			Some(p) => p,
-			None => break
-		};
+enum Token {
+	OpenParen,
+	CloseParen,
+	Quote,
+	Octothorpe,
+	StrLit(String),
+	Ident(&str), // Any non-delim char sequence not in a string
+}
 
-		// First pass: Check for comment
+// TODO: Raw string literal. Maybe R"delim(raw text)delim"
+
+fn char_is_number(c: char) -> bool {
+	match c {
+		'0'...'9' => true,
+		_ => false
+	}
+}
+
+fn escape_raw_str(s: &str) -> String {
+	let mut v = Vec::with_capacity(s.len());
+	for b in s.bytes() {
+		let c = b as char;
 		match c {
-			'\n' => in_comment = false,
-			';' if !in_string && !in_escape => in_comment = true,
-			_ => ()
-		}
-		if in_comment {
-			start_pos = i+1;
-			continue
-		}
-		// Second pass: General splitting
-		match c {
-			' ' => {
-				if !in_string {
-					if !in_space && start_pos != i{
-						ss.push(src.slice(start_pos, i));
-					}
-					start_pos = i+1;
-				}
-				if in_escape { in_escape = false; }
+			'\t' | '\r' | '\n' | '"' | '\\' => for ch in c.escape_default() {
+				v.push(ch as u8)
 			},
-			'\r' | '\n' => {
-				if !in_string {
-					if !in_space && start_pos != i{
-						ss.push(src.slice(start_pos, i));
-					}
-					// Handle \r\n line endings in case of windows
-					if c == '\r' {
-						start_pos = i + 2;
-						char_iter.next();
-					} else {
-						start_pos = i + 1;
-					}
-				}
-				if in_escape { in_escape = false; }
-			},
-			'"' if !in_escape => {
-				if in_string {
-					ss.push(src.slice(start_pos, i+1));
-					start_pos = i+1;
-				} else {
-					start_pos = i;
-				}
-				in_string = !in_string;
-			},
-			'\\' => if !in_escape { in_escape = true; },
-			'(' | ')' if !in_string && !in_escape => {
-				if !in_space && start_pos != i {
-					ss.push(src.slice(start_pos, i));
-				}
-				ss.push(src.slice(i, i+1));
-				start_pos = i+1;
-			},
-			_ => (),
-		}
-		// Third pass: Check for space
-		match c {
-			' ' | '\n' => in_space = true,
-			_ => in_space = false
+			_ => v.push(b),
 		}
 	}
-	ss
+	String::from_utf8(v).unwrap()
+}
+
+struct Parser {
+	in_str_lit: bool,
+	in_raw_str_lit: bool,
+	comp_str_start_line: usize,
+	comp_str_lit: String
+}
+impl Parser {
+	fn get_rest_of_str_lit(&self, src_line: &str) -> (Option<usize>, &str) {
+		let p = if self.in_str_lit {
+				str_lit_exit(src_line)
+			} else {
+				raw_str_lit_exit(src_line)
+			};
+		if p == 0 {
+			(None, line_src[0..])
+		} else {
+			(Some(p), line_src[0..p])
+		}
+	}
+
+	fn match_chars_to_tokens(&mut self, src_line: &str) -> Vec<Token> {
+		let mut tokens = Vec::with_capacity(3);
+		let mut char_iter = src_line.char_indices();
+		while let (i, c) = char_iter.next() {
+			match c {
+				';' => break,
+				' ' | '\t' => continue,
+				'(' => tokens.push(Token::OpenParen),
+				')' => tokens.push(Token::CloseParen),
+				'\'' => tokens.push(Token::Quote),
+				// '#' => tokens.push(Token::Octothorpe),
+				'"' => match str_lit_exit(src_line[i+1..]) {
+					None => {
+						self.comp_str_lit = line_src[i+1..].to_string();
+						self.in_str_lit = true;
+						break
+					},
+					Some(p) => {
+						tokens.push(Token::StrLit(
+								line_src[i+1..p].to_string()));
+						char_iter = src_line[p+1..].char_indices();
+					}
+				},
+				'R' if src_line[i+1..i+4] == "\"_(" =>
+					match raw_str_lit_exit(src_line[i+4..])
+				{
+					None => {
+						self.comp_st_rlit = line_src[i..].to_string();
+						self.in_str_lit = true;
+						break
+					},
+					Some(p) => {
+						tokens.push(Token::StrLit(
+							escape_raw_str(line_src[i+4..p])));
+						char_iter = src_line[p+4..].char_indices();
+					}
+				},
+				x => {
+					let p = ident_exit(src_line, i);
+					tokens.push(Token::Ident(line_src[i..p]));
+					char_iter = src_line[p+1..].char_indices();
+				}
+			}
+		}
+		tokens
+	}
+
+	fn tokenize_line(&mut self, mut src_line: &str) -> Option<Vec<Token>> {
+		if in_str_lit || in_raw_str_lit {
+			let (maybe_end, s) = self.get_rest_of_str_lit(src_line);
+			self.comp_str_lit.push(s);
+			if let Some(end_pos) = maybe_end {
+				if end_pos == (src_line.len()-1) {
+					return None;
+				}
+				src_line = src_line[i+1..].trim_left();
+			} else {
+				return None;
+			}
+		}
+
+		Some(self.match_chars_to_tokens(src_line))
+	}
+	pub fn tokenize_source(&mut self, src: &str) -> Vec<(usize, Vec<Token>)> {
+		let mut ret_lines = Vec::with_capacity(src.len() / 40);
+
+		for (line_n, src_line) in src.lines().map(|l| l.trim()).enumerate()
+			.filter(|(_, l)| !l.is_empty() && !l.begins_with(';'))
+		{
+			let maybe_tokenized = self.tokenize_line(src_line);
+			if let Some(tokenized) = maybe_tokenized {
+				if self.in_str_lit || self.in_raw_str_lit {
+					(self.in_str_lit, self.in_raw_str_lit) = (false, false);
+					ret_lines.push((comp_str_start_line, tokenized))
+				} else {
+					ret_lines.push((line_n, tokenized))
+				}
+			} else {
+				continue
+			}
+		}
+
+		ret_lines
+	}
 }
 
 /// Index the matching closing parenthesis in `v` for the opening parenthesis
 /// preceding the slice
-fn matching_paren(v: &[&str]) -> Option<usize> {
+fn matching_paren(v: &[Token]) -> Option<usize> {
 	let mut unclosed_parens: i32 = 0;
-	for (i,s) in v.iter().enumerate() {
-		if *s == ")" {
-			if unclosed_parens == 0 {
-				return Some(i);
-			}
-			unclosed_parens -= 1;
-		} else if *s == "(" {
-			unclosed_parens += 1;
+	for (i, t) in v.iter().enumerate() {
+		match t {
+			Token::CloseParen => if unclosed_parens == 0 {
+					return Some(i)
+				} else {
+					unclosed_parens -= 1
+				},
+			Token::OpenParen => unclosed_parens += 1,
+			_ => ()
 		}
 	}
 	None
 }
 
+fn parse_number(s: &str) -> Option<f64> {
+	s.replace("_", "").parse()
+}
+fn parse_bool(s: &str) -> Option<bool> {
+	match s {
+		"#t" => Some(true),
+		"#f" => Some(false),
+		_ => None
+	}
+}
 fn parse_binding(s: &str) -> Option<String> {
 	Some(s.to_string())
 }
 
-fn parse_number(s: &str) -> Option<f64> {
-	s.replace("_", "").parse()
-}
 
-fn parse_str_literal(s: &str) -> Option<&str> {
-	if s.starts_with("\"") && s.ends_with("\"") {
-		Some(&s[1..s.len()-1])
-	} else {
-		None
-	}
-}
-
-fn parse_symbol(s: &str) -> Option<&str> {
-	if s.starts_with("'") {
-		Some(&s[1..])
-	} else {
-		None
-	}
-}
-
-fn parse_bool(s: &str) -> Option<bool> {
-	if s == "#t" {
-		Some(true)
-	} else if s == "#f" {
-		Some(false)
-	} else {
-		None
-	}
-}
-
-/// Takes a slice of separated symbols, each being a parenthesis, a bool literal, a numeric literal
-/// or whatever. These tokens are parsed into `SEle`'s so that they can be evaluated as expressions.
-pub fn parse_expressions(unparsed: &[&str]) -> List<SEle> {
+/// Tokens are parsed to `SEle`'s so that they can be evaluated as expressions.
+pub fn parse_tokens(unparsed: &[(usize, Token)]) -> List<SEle> {
 	let mut parsed = list![];
 	let mut i = 0;
-	while i < unparsed.len() {
-		let current_s = unparsed[i];
-		if current_s == "(" {
-			if let Some(matching_paren) = matching_paren(&unparsed[i+1..]) {
-				let exprs_to_parse = &unparsed[i+1..i+1+matching_paren];
-				parsed.push(SExpr(parse_expressions(exprs_to_parse)));
-				i = i+matching_paren+1;
-			} else {
-				scheme_alert(ScmAlert::Unclosed, &ScmAlertMode::Error);
-			}
-		} else if current_s == "'" && i+1 < unparsed.len() && unparsed[i+1] == "(" {
-			i += 1;
-			if let Some(matching_paren) = matching_paren(&unparsed[i+1..]) {
-				let list_item_to_parse = &unparsed[i+1..i+1+matching_paren];
-				let list = SExpr(parse_expressions(list_item_to_parse));
-				// TODO: add macro to create Lists similar to vec![]
-				let quoted = SExpr(list![SBinding("quote".to_string()), list]);
-				parsed.push(quoted);
-				i = i+matching_paren+1;
-			} else {
-				scheme_alert(ScmAlert::Unclosed, &ScmAlertMode::Error);
-			}
-		} else if let Some(f) = parse_number(current_s) {
-			parsed.push(SNum(f));
-		} else if let Some(s) = parse_str_literal(current_s) {
-			parsed.push(SStr(s.to_string()));
-		} else if let Some(s) = parse_symbol(current_s) {
-			parsed.push(SSymbol(s.to_string()));
-		} else if let Some(b) = parse_bool(current_s) {
-			parsed.push(SBool(b));
-		} else if let Some(b) = parse_binding(current_s) {
-			parsed.push(SBinding(b));
+	let unparsed_len = unparsed.len();
+	while i < unparsed_len {
+		let (line_n, current_token) = unparsed[i];
+		match *current_token {
+			Token::OpenParen =>
+				if let Some(mp) = matching_paren(&unparsed[i+1..]) {
+					parsed.push(SExpr(parse_tokens(&unparsed[i+1..i+1+mp])));
+					i+= mp+1;
+				} else {
+					scheme_alert(ScmAlert::Unclosed(line_n),
+						&ScmAlertMode::Error);
+				},
+			Token::Quote if unparsed[i+1] == Token::OpenParen && i+1 < unparsed_len => {
+					i += 1;
+					if let Some(mp) = matching_paren(&unparsed[i+1..]) {
+						let expr = list![
+							SBinding("quote".to_string()),
+							SExpr(parse_tokens(
+									&unparsed[i+1..i+1+mp]))];
+						parsed.push(SExpr(expr));
+						i += mp+1;
+					} else {
+						scheme_alert(ScmAlert::Unclosed(line_n),
+							&ScmAlertMode::Error);
+					}
+				},
+			Token::Quote => if let Token::Ident(s) = unparsed[i+1] {
+					parsed.push(SSymbol(s.to_string()));
+					i += 1;
+				},
+			StrLit(ref s) => parsed.push(SBinding(s.clone())),
+			Ident(s) => if let Some(f) = parse_number(s) {
+					parsed.push(SNum(f));
+				} else if let Some(b) = parse_bool(s) {
+					parsed.push(SBool(b));
+				} else {
+					parsed.push(SBinding(s.to_string()));
+				},
+			_ => ()
 		}
 		i += 1;
 	}
