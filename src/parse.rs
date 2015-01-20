@@ -114,9 +114,12 @@ impl Tokenizer {
 				')' => tokens.push(Token::CloseParen),
 				'\'' => tokens.push(Token::Quote),
 				// '#' => tokens.push(Token::Octothorpe),
+				// TODO: merge "string" and R"_(raw string)_" into same match to
+				// save space?
 				'"' => match str_lit_exit(&src_line[i+1..]) {
 					None => {
 						self.comp_str_lit = src_line[i+1..].to_string();
+						self.comp_str_lit.push('\n');
 						self.in_str_lit = true;
 						break
 					},
@@ -131,6 +134,7 @@ impl Tokenizer {
 				{
 					None => {
 						self.comp_str_lit = src_line[i+4..].to_string();
+						self.comp_str_lit.push('\n');
 						self.in_raw_str_lit = true;
 						break;
 					},
@@ -159,14 +163,19 @@ impl Tokenizer {
 			let (maybe_end, s) = self.get_rest_of_str_lit(src_line);
 			self.comp_str_lit.push_str(s);
 			if let Some(end_pos) = maybe_end {
-				self.in_str_lit = false;
-				self.in_raw_str_lit = false;
 				let str_lit = mem::replace(&mut self.comp_str_lit,
 					String::with_capacity(6));
 				tokens.push(Token::StrLit(str_lit));
-				let filler = if self.in_str_lit { 1 } else { 3 };
+				let filler = if self.in_str_lit {
+					self.in_str_lit = false;
+					1
+				} else {
+					self.in_raw_str_lit = false;
+					3
+				};
 				src_line = src_line[end_pos+filler..].trim_left();
 			} else {
+				self.comp_str_lit.push('\n');
 				return None;
 			}
 		}
@@ -289,4 +298,23 @@ pub fn parse_token_lines(unparsed: Vec<(usize, Vec<Token>)>) -> List<SEle> {
 			acc.extend(tokens.into_iter().map(|t| (line_n, t)));
 			acc });
 	parse_tokens(lined_tokens.as_slice())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{ Tokenizer, parse_token_lines};
+	use super::Token::*;
+	#[test]
+	fn t_tokenize() {
+		let src = "(\nfoo(1 c_d-e+f?g)\"B\n\tA\n R\" )";
+		let mut tokenizer = Tokenizer::new();
+		let mut lines = tokenizer.tokenize_source(src);
+		let tokens = lines.into_iter().fold(Vec::with_capacity(8), |mut acc, (_, ts)| {
+			acc.extend(ts.into_iter().map(|t| t));
+			acc });
+		let v = vec![OpenParen, Ident("foo".to_string()), OpenParen,
+			Ident("1".to_string()), Ident("c_d-e+f?g".to_string()), CloseParen,
+			StrLit("B\nA\nR".to_string()), CloseParen ];
+		assert_eq!(tokens, v);
+	}
 }
