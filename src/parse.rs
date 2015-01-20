@@ -64,14 +64,32 @@ fn escape_raw_str(s: &str) -> String {
 	String::from_utf8(v).unwrap()
 }
 
-fn str_lit_exit(s: &str) -> Option<usize> {
-	s.find_str("\"")
+// (n of chars, n of u8s (len))
+fn str_lit_exit(s: &str) -> Option<(usize, usize)> {
+	if let Some(len) = s.find_str("\"") {
+		Some((s.char_indices().take_while(|&(i, c)| i < len).count(), len))
+	} else {
+		None
+	}
 }
-fn raw_str_lit_exit(s: &str) -> Option<usize> {
-	s.find_str(")_\"")
+fn raw_str_lit_exit(s: &str) -> Option<(usize, usize)> {
+	if let Some(len) = s.find_str(")_\"") {
+		Some((s.char_indices().take_while(|&(i, c)| i < len).count(), len))
+	} else {
+		None
+	}
 }
-fn ident_exit(s: &str) -> usize {
-	s.chars().take_while(|c| !DELIMITERS.contains(c)).count()
+fn ident_exit(s: &str) -> (usize, usize) {
+	let mut n_chars = 0;
+	let mut i = 0;
+	for (c_i, c) in s.char_indices() {
+		if DELIMITERS.contains(&c) {
+			return (n_chars, c_i);
+		}
+		n_chars += 1;
+		i = c_i;
+	}
+	(n_chars, i)
 }
 
 pub struct Tokenizer {
@@ -89,16 +107,17 @@ impl Tokenizer {
 			comp_str_lit: String::with_capacity(6) }
 	}
 
+	// (End pos, rest of str)
 	fn get_rest_of_str_lit<'a>(&self, src_line: &'a str) -> (Option<usize>, &'a str) {
-		let maybe_p = if self.in_str_lit {
+		let maybe_len = if self.in_str_lit {
 				str_lit_exit(src_line)
 			} else if self.in_raw_str_lit {
 				raw_str_lit_exit(src_line)
 			} else {
 				panic!("Not in string literal");
 			};
-		if let Some(p) = maybe_p {
-			(Some(p), &src_line[0..p])
+		if let Some((_, len)) = maybe_len {
+			(Some(len), &src_line[0..len])
 		} else {
 			(None, &src_line[0..])
 		}
@@ -123,10 +142,10 @@ impl Tokenizer {
 						self.in_str_lit = true;
 						break
 					},
-					Some(str_len) => {
+					Some((n_chars, len)) => {
 						tokens.push(Token::StrLit(
-							src_line[i+1..i+1+str_len].to_string()));
-						iterator_travel_n(&mut char_iter, str_len+1);
+							src_line[i+1..i+1+len].to_string()));
+						iterator_travel_n(&mut char_iter, n_chars+1);
 					}
 				},
 				'R' if &src_line[i+1..i+4] == "\"_(" =>
@@ -138,17 +157,17 @@ impl Tokenizer {
 						self.in_raw_str_lit = true;
 						break;
 					},
-					Some(str_len) => {
+					Some((n_chars, len)) => {
 						tokens.push(Token::StrLit(escape_raw_str(
-							&src_line[i+4..i+4+str_len])));
-						iterator_travel_n(&mut char_iter, str_len+6);
+							&src_line[i+4..i+4+len])));
+						iterator_travel_n(&mut char_iter, n_chars+6);
 					}
 				},
 				x => {
-					let ident_len = ident_exit(&src_line[i..]);
+					let (n_chars, len) = ident_exit(&src_line[i..]);
 					tokens.push(Token::Ident(
-						src_line[i..i+ident_len].to_string()));
-					iterator_travel_n(&mut char_iter, ident_len-1);
+						src_line[i..i+len].to_string()));
+					iterator_travel_n(&mut char_iter, n_chars-1);
 				}
 			}
 		}
@@ -302,19 +321,46 @@ pub fn parse_token_lines(unparsed: Vec<(usize, Vec<Token>)>) -> List<SEle> {
 
 #[cfg(test)]
 mod tests {
-	use super::{ Tokenizer, parse_token_lines};
+	use super::{Tokenizer, parse_token_lines, ident_exit};
 	use super::Token::*;
+
+	#[test]
+	fn t_sequence_exits() {
+		assert_eq!(ident_exit("Foo\" bar"), (3, 3));
+		assert_eq!(ident_exit("Föö\"bär"), ident_exit("Föö "));
+		assert_eq!(ident_exit("Fäå) θ"), (3, 5));
+	}
 	#[test]
 	fn t_tokenize() {
-		let src = "(\nfoo(1 c_d-e+f?g)\"B\n\tA\n R\" )";
+		let src = "(\nfoo(1 α_β-å+ä?ö)\"B\n\tA\n R\" )";
 		let mut tokenizer = Tokenizer::new();
 		let mut lines = tokenizer.tokenize_source(src);
 		let tokens = lines.into_iter().fold(Vec::with_capacity(8), |mut acc, (_, ts)| {
 			acc.extend(ts.into_iter().map(|t| t));
 			acc });
 		let v = vec![OpenParen, Ident("foo".to_string()), OpenParen,
-			Ident("1".to_string()), Ident("c_d-e+f?g".to_string()), CloseParen,
+			Ident("1".to_string()), Ident("α_β-å+ä?ö".to_string()), CloseParen,
 			StrLit("B\nA\nR".to_string()), CloseParen ];
+		assert_eq!(tokens, v);
+	}
+	#[test]
+	fn t_tokenize_strs() {
+		let src = "(\"Foo Bar Baz\")";
+		let tokens = Tokenizer::new().tokenize_source(src)
+			.into_iter()
+			.fold(Vec::new(), |mut acc, (_, ts)| {
+				acc.extend(ts.into_iter().map(|t| t));
+				acc });
+		let v = vec![OpenParen, StrLit("Foo Bar Baz".to_string()), CloseParen];
+		assert_eq!(tokens, v);
+
+		let src = "(\"Föö Bär Båz\")";
+		let tokens = Tokenizer::new().tokenize_source(src)
+			.into_iter()
+			.fold(Vec::new(), |mut acc, (_, ts)| {
+				acc.extend(ts.into_iter().map(|t| t));
+				acc });
+		let v = vec![OpenParen, StrLit("Föö Bär Båz".to_string()), CloseParen];
 		assert_eq!(tokens, v);
 	}
 }
