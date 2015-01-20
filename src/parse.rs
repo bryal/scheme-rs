@@ -92,8 +92,10 @@ impl Tokenizer {
 	fn get_rest_of_str_lit<'a>(&self, src_line: &'a str) -> (Option<usize>, &'a str) {
 		let maybe_p = if self.in_str_lit {
 				str_lit_exit(src_line)
-			} else {
+			} else if self.in_raw_str_lit {
 				raw_str_lit_exit(src_line)
+			} else {
+				panic!("Not in string literal");
 			};
 		if let Some(p) = maybe_p {
 			(Some(p), &src_line[0..p])
@@ -128,8 +130,8 @@ impl Tokenizer {
 					match raw_str_lit_exit(&src_line[i+4..])
 				{
 					None => {
-						self.comp_str_lit = src_line[i..].to_string();
-						self.in_str_lit = true;
+						self.comp_str_lit = src_line[i+4..].to_string();
+						self.in_raw_str_lit = true;
 						break;
 					},
 					Some(str_len) => {
@@ -157,32 +159,36 @@ impl Tokenizer {
 			let (maybe_end, s) = self.get_rest_of_str_lit(src_line);
 			self.comp_str_lit.push_str(s);
 			if let Some(end_pos) = maybe_end {
+				self.in_str_lit = false;
+				self.in_raw_str_lit = false;
 				let str_lit = mem::replace(&mut self.comp_str_lit,
 					String::with_capacity(6));
 				tokens.push(Token::StrLit(str_lit));
-				src_line = src_line[end_pos+1..].trim_left();
+				let filler = if self.in_str_lit { 1 } else { 3 };
+				src_line = src_line[end_pos+filler..].trim_left();
 			} else {
 				return None;
 			}
 		}
 
-		Some(self.match_chars_to_tokens(src_line, tokens))
+		let tokens = self.match_chars_to_tokens(src_line, tokens);
+		if tokens.len() == 0 {
+			None
+		} else {
+			Some(tokens)
+		}
 	}
 	pub fn tokenize_source(&mut self, src: &str) -> Vec<(usize, Vec<Token>)> {
 		let mut ret_lines = Vec::with_capacity(src.len() / 40);
 
-		for (line_n, src_line) in src.lines().enumerate().map(|(n, l)| (n+1, l.trim()))
+		for (line_n, src_line) in src.lines()
+			.enumerate()
+			.map(|(n, l)| (n+1, l.trim()))
 			.filter(|&(_, l)| !l.is_empty() && !l.starts_with(";"))
 		{
 			let maybe_tokenized = self.tokenize_line(src_line);
 			if let Some(tokenized) = maybe_tokenized {
-				if self.in_str_lit || self.in_raw_str_lit {
-					self.in_str_lit = false;
-					self.in_raw_str_lit = false;
-					ret_lines.push((self.comp_str_start_line, tokenized))
-				} else {
-					ret_lines.push((line_n, tokenized))
-				}
+				ret_lines.push((line_n, tokenized))
 			} else {
 				continue
 			}
@@ -261,7 +267,7 @@ fn parse_tokens(unparsed: &[(usize, Token)]) -> List<SEle> {
 					parsed.push(SSymbol(s.clone()));
 					i += 1;
 				},
-			Token::StrLit(ref s) => {parsed.push(SBinding(s.clone()));},
+			Token::StrLit(ref s) => {parsed.push(SStr(s.clone()));},
 			Token::Ident(ref s) => if let Some(b) = parse_bool(s.as_slice()) {
 					parsed.push(SBool(b));
 				} else if let Some(f) = parse_number(s.as_slice()) {

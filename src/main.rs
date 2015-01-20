@@ -92,7 +92,7 @@ fn main(){
 	let mut env = Env::new(vars);
 
 	let stdlib_src = input::read_stdlib();
-	
+
 	let tokenized = tokenizer.tokenize_source(stdlib_src.as_slice());
 	let parsed = parse::parse_token_lines(tokenized);
 
@@ -100,8 +100,12 @@ fn main(){
 
 	if let Some(input) = input::get_input() {
 		let begin_wrapped = format!("(begin {})", input);
-		let mut parsed = parse::parse_token_lines(tokenizer.tokenize_source(
-				begin_wrapped.as_slice()));
+		let tokenized = tokenizer.tokenize_source(begin_wrapped.as_slice());
+		// debug
+		// for &(n, ref t) in tokenized.iter() {
+		// 	println!("{}: {:?}", n, t);
+		// }
+		let mut parsed = parse::parse_token_lines(tokenized);
 		if parsed.len() != 1 {
 			panic!("Parsed source is invalid")
 		}

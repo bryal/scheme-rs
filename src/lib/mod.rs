@@ -56,7 +56,8 @@ pub fn scheme_alert(alert: ScmAlert, a_type: &ScmAlertMode) -> SEle {
 		ScmAlert::Bad(s) => println!("; {:?}: Bad {}", a_type, s),
 		ScmAlert::NaN(e) =>
 			println!("; {:?}: `{}: {}` is not a number", a_type, e, e.variant()),
-		ScmAlert::Unclosed(row) => println!("; {:?}: Unclosed delimiter, {}", a_type, row),
+		ScmAlert::Unclosed(row) => println!("; {:?}: Unclosed delimiter on line {}",
+			a_type, row),
 		ScmAlert::ArityMiss(s, got,vs, exp) =>
 			println!("; {:?}: Arity missmatch in `{}`, {} {} {}", a_type, s, got,vs,exp),
 		ScmAlert::Custom(s) => println!("; {:?}: {}", a_type, s),
