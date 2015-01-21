@@ -89,7 +89,7 @@ fn ident_exit(s: &str) -> (usize, usize) {
 		n_chars += 1;
 		i = c_i;
 	}
-	(n_chars, i)
+	(n_chars, i+1)
 }
 
 pub struct Tokenizer {
@@ -214,8 +214,7 @@ impl Tokenizer {
 			.map(|(n, l)| (n+1, l.trim()))
 			.filter(|&(_, l)| !l.is_empty() && !l.starts_with(";"))
 		{
-			let maybe_tokenized = self.tokenize_line(src_line);
-			if let Some(tokenized) = maybe_tokenized {
+			if let Some(tokenized) = self.tokenize_line(src_line) {
 				ret_lines.push((line_n, tokenized))
 			} else {
 				continue
@@ -332,7 +331,7 @@ mod tests {
 	}
 	#[test]
 	fn t_tokenize() {
-		let src = "(\nfoo(1 α_β-å+ä?ö)\"B\n\tA\n R\" )";
+		let src = "(\nfoo(1\n α_β-å+ä?ö)\"B\n\tA\n R\" )";
 		let mut tokenizer = Tokenizer::new();
 		let mut lines = tokenizer.tokenize_source(src);
 		let tokens = lines.into_iter().fold(Vec::with_capacity(8), |mut acc, (_, ts)| {
